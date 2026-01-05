@@ -4,6 +4,7 @@ import json
 import pandas as pd
 from datetime import datetime
 from io import BytesIO
+import re
 
 # ---------------------------------------------------
 # Import standalone parsers (EXISTING)
@@ -15,37 +16,72 @@ from cimb import parse_transactions_cimb
 from bank_islam import parse_bank_islam
 from bank_rakyat import parse_bank_rakyat
 
-
 # ---------------------------------------------------
-# NEW BANK PARSERS (ADDED ONLY)
+# NEW BANK PARSERS (EXISTING)
 # ---------------------------------------------------
-
 from ambank import parse_ambank
 from bank_muamalat import parse_transactions_bank_muamalat
 from affin_bank import parse_affin_bank
 from agro_bank import parse_agro_bank
 
-# ---------------------------------------------------
-# Streamlit Setup
-# ---------------------------------------------------
+
+# ===================================================
+# FRAUD DETECTION (MAYBANK ONLY)
+# ===================================================
+def normalize_text(text):
+    text = text.upper()
+    text = re.sub(r"[^A-Z0-9 ]", " ", text)
+    text = re.sub(r"\b(SDN|BHD|BERHAD|LIMITED|LTD)\b", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+def fraud_check_maybank(transaction, company_name, enabled=True):
+    """
+    Simple Maybank fraud detection:
+    - Flag TRUE if company name appears in transaction description
+    """
+
+    transaction["fraud_flag"] = False
+
+    if not enabled or not company_name:
+        return transaction
+
+    desc = transaction.get("description", "")
+    if not desc:
+        return transaction
+
+    desc_norm = normalize_text(desc)
+    company_norm = normalize_text(company_name)
+
+    company_tokens = company_norm.split()
+    match_count = sum(1 for t in company_tokens if t in desc_norm)
+
+    if match_count >= 2:
+        transaction["fraud_flag"] = True
+
+    return transaction
+
+
+# ===================================================
+# STREAMLIT SETUP
+# ===================================================
 st.set_page_config(page_title="Bank Statement Parser", layout="wide")
 st.title("📄 Bank Statement Parser (Multi-File Support)")
 st.write("Upload one or more bank statement PDFs to extract transactions.")
 
 
-# ---------------------------------------------------
-# Session State
-# ---------------------------------------------------
+# ===================================================
+# SESSION STATE
+# ===================================================
 if "status" not in st.session_state:
-    st.session_state.status = "idle"    # idle, running, stopped
+    st.session_state.status = "idle"
 
 if "results" not in st.session_state:
     st.session_state.results = []
 
 
-# ---------------------------------------------------
-# Bank Selection
-# ---------------------------------------------------
+# ===================================================
+# BANK SELECTION
+# ===================================================
 bank_choice = st.selectbox(
     "Select Bank Format",
     [
@@ -56,30 +92,42 @@ bank_choice = st.selectbox(
         "Bank Islam",
         "Bank Rakyat",
         "Ambank",
-        "Affin Bank",        # ✅ NEW
-        "Bank Muamalat",      # ✅ NEW
-        "Agro Bank"      # ✅ NEW
+        "Affin Bank",
+        "Bank Muamalat",
+        "Agro Bank"
     ]
 )
 
 
-# ---------------------------------------------------
-# File Upload
-# ---------------------------------------------------
+# ===================================================
+# FRAUD DETECTION CONTROLS (MAYBANK ONLY)
+# ===================================================
+st.subheader("🚨 Fraud Detection (Maybank Only)")
+
+enable_fraud_check = st.checkbox("Enable Fraud Detection", value=False)
+
+company_name_input = st.text_input(
+    "Company Name (used for inter-transaction detection)",
+    placeholder="e.g. CLEAR WATER SERVICE SDN BHD"
+)
+
+
+# ===================================================
+# FILE UPLOAD
+# ===================================================
 uploaded_files = st.file_uploader(
     "Upload PDF files",
     type=["pdf"],
     accept_multiple_files=True
 )
 
-# Sort uploaded files by name
 if uploaded_files:
     uploaded_files = sorted(uploaded_files, key=lambda x: x.name)
 
 
-# ---------------------------------------------------
-# Start / Stop / Reset Controls
-# ---------------------------------------------------
+# ===================================================
+# START / STOP / RESET
+# ===================================================
 col1, col2, col3 = st.columns(3)
 
 with col1:
@@ -99,16 +147,14 @@ with col3:
 st.write(f"### ⚙️ Status: **{st.session_state.status.upper()}**")
 
 
-# ---------------------------------------------------
+# ===================================================
 # MAIN PROCESSING
-# ---------------------------------------------------
+# ===================================================
 all_tx = []
 
 if uploaded_files and st.session_state.status == "running":
 
-    bank_display_box = st.empty()
     progress_bar = st.progress(0)
-
     total_files = len(uploaded_files)
 
     for file_idx, uploaded_file in enumerate(uploaded_files):
@@ -118,7 +164,6 @@ if uploaded_files and st.session_state.status == "running":
             break
 
         st.write(f"### 🗂️ Processing File: **{uploaded_file.name}**")
-        bank_display_box.info(f"📄 Processing {bank_choice}: {uploaded_file.name}...")
 
         try:
             with pdfplumber.open(uploaded_file) as pdf:
@@ -130,16 +175,13 @@ if uploaded_files and st.session_state.status == "running":
 
                 elif bank_choice == "Public Bank (PBB)":
                     tx = parse_transactions_pbb(pdf, uploaded_file.name)
-                    
+
                 elif bank_choice == "RHB Bank":
                     tx = parse_transactions_rhb(uploaded_file, uploaded_file.name)
 
-                #elif bank_choice == "RHB Bank":
-                #   tx = parse_transactions_rhb(pdf, uploaded_file.name)
-
                 elif bank_choice == "CIMB Bank":
                     tx = parse_transactions_cimb(pdf, uploaded_file.name)
-                                
+
                 elif bank_choice == "Ambank":
                     tx = parse_ambank(pdf, uploaded_file.name)
 
@@ -149,86 +191,53 @@ if uploaded_files and st.session_state.status == "running":
                 elif bank_choice == "Bank Rakyat":
                     tx = parse_bank_rakyat(pdf, uploaded_file.name)
 
-                # ---------------------------------------------------
-                # NEW BANKS (ADDED ONLY)
-                # ---------------------------------------------------
-
                 elif bank_choice == "Bank Muamalat":
                     tx = parse_transactions_bank_muamalat(pdf, uploaded_file.name)
 
                 elif bank_choice == "Agro Bank":
                     tx = parse_agro_bank(pdf, uploaded_file.name)
-                
+
                 elif bank_choice == "Affin Bank":
                     tx = parse_affin_bank(pdf, uploaded_file.name)
 
                 if tx:
-                    st.success(f"✅ Extracted {len(tx)} transactions from {uploaded_file.name}")
+                    st.success(f"✅ Extracted {len(tx)} transactions")
                     all_tx.extend(tx)
                 else:
-                    st.warning(f"⚠️ No transactions found in {uploaded_file.name}")
+                    st.warning("⚠️ No transactions found")
 
         except Exception as e:
             st.error(f"❌ Error processing {uploaded_file.name}: {e}")
 
-        progress = (file_idx + 1) / total_files
-        progress_bar.progress(progress)
+        progress_bar.progress((file_idx + 1) / total_files)
 
-    bank_display_box.success(f"🏦 Completed processing: **{bank_choice}**")
     st.session_state.results = all_tx
 
 
-# ---------------------------------------------------
-# CALCULATE MONTHLY SUMMARY
-# ---------------------------------------------------
-def calculate_monthly_summary(transactions):
-    if not transactions:
-        return []
-
-    df = pd.DataFrame(transactions)
-
-    df['date_parsed'] = pd.to_datetime(df['date'], errors='coerce')
-    df = df.dropna(subset=['date_parsed'])
-
-    if df.empty:
-        st.warning("⚠️ No valid transaction dates found.")
-        return []
-
-    df['month_period'] = df['date_parsed'].dt.strftime('%Y-%m')
-
-    df['debit'] = pd.to_numeric(df['debit'], errors='coerce').fillna(0)
-    df['credit'] = pd.to_numeric(df['credit'], errors='coerce').fillna(0)
-    df['balance'] = pd.to_numeric(df['balance'], errors='coerce')
-
-    monthly_summary = []
-
-    for period, group in df.groupby('month_period', sort=True):
-
-        ending_balance = None
-        if not group['balance'].isna().all():
-            group_sorted = group.sort_values('date_parsed')
-            balances = group_sorted['balance'].dropna()
-            if not balances.empty:
-                ending_balance = round(balances.iloc[-1], 2)
-
-        monthly_summary.append({
-            'month': period,
-            'transaction_count': len(group),
-            'total_debit': round(group['debit'].sum(), 2),
-            'total_credit': round(group['credit'].sum(), 2),
-            'net_change': round(group['credit'].sum() - group['debit'].sum(), 2),
-            'ending_balance': ending_balance,
-            'lowest_balance': round(group['balance'].min(), 2) if not group['balance'].isna().all() else None,
-            'highest_balance': round(group['balance'].max(), 2) if not group['balance'].isna().all() else None,
-            'source_files': ', '.join(sorted(group['source_file'].unique())) if 'source_file' in group.columns else ''
-        })
-
-    return sorted(monthly_summary, key=lambda x: x['month'])
+# ===================================================
+# APPLY FRAUD DETECTION (POST-PROCESSING)
+# ===================================================
+if (
+    bank_choice == "Maybank"
+    and enable_fraud_check
+    and company_name_input
+    and st.session_state.results
+):
+    updated = []
+    for t in st.session_state.results:
+        updated.append(
+            fraud_check_maybank(
+                transaction=t,
+                company_name=company_name_input,
+                enabled=True
+            )
+        )
+    st.session_state.results = updated
 
 
-# ---------------------------------------------------
+# ===================================================
 # DISPLAY RESULTS
-# ---------------------------------------------------
+# ===================================================
 if st.session_state.results:
 
     st.subheader("📊 Extracted Transactions")
@@ -237,80 +246,38 @@ if st.session_state.results:
 
     display_cols = [
         "date", "description", "debit", "credit",
-        "balance", "page", "bank", "source_file"
+        "balance", "fraud_flag",
+        "page", "bank", "source_file"
     ]
     display_cols = [c for c in display_cols if c in df.columns]
 
-    df_display = df[display_cols]
-    st.dataframe(df_display, use_container_width=True)
+    st.dataframe(df[display_cols], use_container_width=True)
 
-    monthly_summary = calculate_monthly_summary(st.session_state.results)
 
-    if monthly_summary:
-        st.subheader("📅 Monthly Summary")
-        summary_df = pd.DataFrame(monthly_summary)
-        st.dataframe(summary_df, use_container_width=True)
+# ===================================================
+# DOWNLOAD OPTIONS
+# ===================================================
+if st.session_state.results:
 
-        st.markdown("---")
-        col1, col2, col3, col4 = st.columns(4)
-
-        with col1:
-            st.metric("Total Transactions", summary_df['transaction_count'].sum())
-        with col2:
-            st.metric("Total Debits", f"RM {summary_df['total_debit'].sum():,.2f}")
-        with col3:
-            st.metric("Total Credits", f"RM {summary_df['total_credit'].sum():,.2f}")
-        with col4:
-            net_total = summary_df['net_change'].sum()
-            st.metric("Net Change", f"RM {net_total:,.2f}")
-
-    # ---------------------------------------------------
-    # DOWNLOAD OPTIONS
-    # ---------------------------------------------------
     st.subheader("⬇️ Download Options")
-    col1, col2, col3 = st.columns(3)
+
+    col1, col2 = st.columns(2)
 
     with col1:
         st.download_button(
-            "📄 Download Transactions (JSON)",
-            json.dumps(df_display.to_dict(orient="records"), indent=4),
+            "📄 Download JSON",
+            json.dumps(df[display_cols].to_dict(orient="records"), indent=4),
             "transactions.json",
             "application/json"
         )
 
     with col2:
-        full_report = {
-            "summary": {
-                "total_transactions": len(df),
-                "date_range": f"{df['date'].min()} to {df['date'].max()}",
-                "total_files_processed": df['source_file'].nunique()
-            },
-            "monthly_summary": monthly_summary,
-            "transactions": df_display.to_dict(orient="records")
-        }
-        st.download_button(
-            "📊 Download Full Report (JSON)",
-            json.dumps(full_report, indent=4),
-            "full_report.json",
-            "application/json"
-        )
-
-    with col3:
         output = BytesIO()
         with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-            df_display.to_excel(writer, sheet_name="Transactions", index=False)
-            if monthly_summary:
-                pd.DataFrame(monthly_summary).to_excel(
-                    writer, sheet_name="Monthly Summary", index=False
-                )
-
+            df[display_cols].to_excel(writer, index=False)
         st.download_button(
-            "📊 Download Full Report (XLSX)",
+            "📊 Download Excel",
             output.getvalue(),
-            "full_report.xlsx",
+            "transactions.xlsx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-
-else:
-    if uploaded_files:
-        st.warning("⚠️ No transactions found — click **Start Processing**.")
