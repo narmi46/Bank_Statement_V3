@@ -1,3 +1,4 @@
+
 def parse_transactions_maybank(pdf_input, source_filename):
     import re
     import fitz
@@ -164,22 +165,15 @@ def parse_transactions_maybank(pdf_input, source_filename):
     # =========================================================
     # PARSER B: Islamic-style split-date rows (unchanged)
     # =========================================================
-    
-    
     MONTHS = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"}
-    
-    def is_day(t):
-        return t.isdigit() and 1 <= int(t) <= 31
-    
-    def is_month(t):
-        return t.capitalize() in MONTHS
-    
-    def is_year(t):
-        return t.isdigit() and t.startswith("20")
-    
+
+    def is_day(t): return t.isdigit() and 1 <= int(t) <= 31
+    def is_month(t): return t.capitalize() in MONTHS
+    def is_year(t): return t.isdigit() and t.startswith("20")
+
     def parse_amount(v):
         return float(v.replace(",", ""))
-    
+
     def looks_like_money(t):
         tt = t.replace(",", "")
         if "." not in tt:
@@ -189,77 +183,57 @@ def parse_transactions_maybank(pdf_input, source_filename):
             return True
         except:
             return False
-    
-    
-    def parse_split_date(doc, bank_name, source_filename):
+
+    def parse_split_date():
         transactions = []
         previous_balance = None
-    
+
         for page_index, page in enumerate(doc):
             words = page.get_text("words")
-    
             rows = [{
                 "x": w[0],
                 "y": round(w[1], 1),
                 "text": str(w[4]).strip()
             } for w in words if str(w[4]).strip()]
-    
+
             rows.sort(key=lambda r: (r["y"], r["x"]))
             used_y = set()
-    
-            i = 0
-            while i < len(rows) - 2:
+
+            for i in range(len(rows) - 2):
                 w1, w2, w3 = rows[i], rows[i+1], rows[i+2]
-    
                 if not (is_day(w1["text"]) and is_month(w2["text"]) and is_year(w3["text"])):
-                    i += 1
                     continue
-    
+
                 y_key = w1["y"]
                 if y_key in used_y:
-                    i += 1
                     continue
-    
+
                 try:
                     date_iso = datetime.strptime(
                         f"{w1['text']} {w2['text']} {w3['text']}",
                         "%d %b %Y"
                     ).strftime("%Y-%m-%d")
                 except:
-                    i += 1
                     continue
-    
-                desc_parts = []
-                amounts = []
-    
-                j = i + 3
-                while j < len(rows):
-                    w = rows[j]
-    
-                    # stop when next date appears
-                    if (
-                        j + 2 < len(rows)
-                        and is_day(rows[j]["text"])
-                        and is_month(rows[j + 1]["text"])
-                        and is_year(rows[j + 2]["text"])
-                    ):
-                        break
-    
-                    if w["y"] >= y_key:
-                        if looks_like_money(w["text"]):
-                            amounts.append(w["text"])
-                        else:
-                            desc_parts.append(w["text"])
-    
-                    j += 1
-    
+
+                line = [w for w in rows if abs(w["y"] - y_key) <= 1.5]
+                line.sort(key=lambda w: w["x"])
+
+                desc_parts, amounts = [], []
+                for w in line:
+                    if w is w1 or w is w2 or w is w3:
+                        continue
+                    if looks_like_money(w["text"]):
+                        amounts.append(w["text"])
+                    else:
+                        desc_parts.append(w["text"])
+
                 if not amounts:
-                    i = j
                     continue
-    
+
                 balance = parse_amount(amounts[-1])
                 debit = credit = 0.0
-    
+
                 if previous_balance is not None:
                     delta = round(balance - previous_balance, 2)
                     if delta < 0:
@@ -270,14 +244,14 @@ def parse_transactions_maybank(pdf_input, source_filename):
                     if len(amounts) >= 2:
                         txn_amt = parse_amount(amounts[-2])
                         desc_up = " ".join(desc_parts).upper()
-                        if "CR" in desc_up or "CREDIT" in desc_up:
+                        if ("CR" in desc_up) or ("CREDIT" in desc_up):
                             credit = txn_amt
                         else:
                             debit = txn_amt
-    
+
                 transactions.append({
                     "date": date_iso,
-                    "description": " ".join(desc_parts).strip()[:300],
+                    "description": " ".join(desc_parts)[:200],
                     "debit": round(debit, 2),
                     "credit": round(credit, 2),
                     "balance": round(balance, 2),
@@ -285,9 +259,35 @@ def parse_transactions_maybank(pdf_input, source_filename):
                     "bank": bank_name,
                     "source_file": source_filename
                 })
-    
+
                 previous_balance = balance
                 used_y.add(y_key)
-                i = j
-    
+
         return transactions
+
+    # ---------------- RUN BOTH + CHOOSE BEST ----------------
+    tx_a = parse_classic()
+    tx_b = parse_split_date()
+
+    tx = tx_a if len(tx_a) >= len(tx_b) else tx_b
+
+    if tx_a and tx_b:
+        seen = set()
+        merged = []
+        for t in (tx_a + tx_b):
+            key = (
+                t["date"],
+                t["description"],
+                t["debit"],
+                t["credit"],
+                t["balance"],
+                t["page"],
+                t["source_file"],
+            )
+            if key not in seen:
+                seen.add(key)
+                merged.append(t)
+        tx = merged
+
+    doc.close()
+    return tx
