@@ -59,6 +59,7 @@ bank_choice = st.selectbox(
         "Ambank",
         "Affin Bank",        # ✅ NEW
         "Bank Muamalat",      # ✅ NEW
+        "Hong Leong",
         "Agro Bank"      # ✅ NEW
     ]
 )
