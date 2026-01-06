@@ -17,14 +17,11 @@ def parse_hong_leong(pdf, filename):
         if not words:
             continue
 
-        # 1) Build row groups by Y
         rows = group_words_by_row(words, tolerance=3)
 
-        # 2) Detect column anchors (Deposit/Withdrawal/Balance) on this page
+        # Detect Deposit/Withdrawal/Balance column x positions (per page)
         col_x = detect_amount_columns(rows)
 
-        # 3) Iterate rows; when we see a date row, we treat it as transaction start,
-        #    and we also append following non-date rows into its description block.
         i = 0
         while i < len(rows):
             row = rows[i]
@@ -34,31 +31,28 @@ def parse_hong_leong(pdf, filename):
                 i += 1
                 continue
 
-            # Skip totals/footer rows
             if is_total_row(row):
                 i += 1
                 continue
 
-            # Collect description lines: current row + subsequent non-date rows
-            desc_lines = []
-            amount_words = []
+            desc_tokens = []
+            amount_tokens = []
 
             # Current row
-            desc_lines.extend(extract_desc_tokens(row))
-            amount_words.extend(extract_amount_tokens(row))
+            desc_tokens.extend(extract_desc_tokens(row))
+            amount_tokens.extend(extract_amount_tokens(row, col_x))
 
-            # Next rows until next date (continuation lines)
+            # Continuation rows until next date
             j = i + 1
             while j < len(rows) and extract_date(rows[j]) is None:
                 if is_total_row(rows[j]):
                     break
-                desc_lines.extend(extract_desc_tokens(rows[j]))
-                amount_words.extend(extract_amount_tokens(rows[j]))
+                desc_tokens.extend(extract_desc_tokens(rows[j]))
+                amount_tokens.extend(extract_amount_tokens(rows[j], col_x))
                 j += 1
 
-            credit, debit = classify_amounts_by_columns(amount_words, col_x)
+            credit, debit = classify_amounts_by_columns(amount_tokens, col_x)
 
-            # If no money movement detected, skip
             if credit == 0.0 and debit == 0.0:
                 i = j
                 continue
@@ -67,10 +61,10 @@ def parse_hong_leong(pdf, filename):
 
             transactions.append({
                 "date": date,
-                "description": clean_description(desc_lines),
+                "description": clean_description(desc_tokens),
                 "debit": debit,
                 "credit": credit,
-                "balance": running_balance,   # calculated, NOT extracted
+                "balance": running_balance,  # calculated, not extracted
                 "page": page_num,
                 "bank": "Hong Leong Islamic Bank",
                 "source_file": filename
@@ -123,18 +117,12 @@ def group_words_by_row(words, tolerance=3):
 # =========================================================
 
 def detect_amount_columns(rows):
-    """
-    Find x0 positions of header words: Deposit, Withdrawal, Balance.
-    Returns dict with keys: deposit_x, withdrawal_x, balance_x.
-    If not found, fallback to typical layout.
-    """
     deposit_x = withdrawal_x = balance_x = None
 
     for row in rows:
-        texts = [w["text"].strip() for w in row]
-        joined = " ".join(texts).lower()
+        joined = " ".join(w["text"].strip().lower() for w in row)
 
-        # header line often includes: "Deposit Withdrawal Balance"
+        # header typically contains all three labels
         if "deposit" in joined and "withdrawal" in joined and "balance" in joined:
             for w in row:
                 t = w["text"].strip().lower()
@@ -146,7 +134,7 @@ def detect_amount_columns(rows):
                     balance_x = w["x0"]
             break
 
-    # Fallbacks (still work if header isn’t extracted on some pages)
+    # sensible fallbacks if header text isn't captured on some pages
     if deposit_x is None:
         deposit_x = 320.0
     if withdrawal_x is None:
@@ -176,11 +164,24 @@ def extract_date(row):
 # TOKEN EXTRACTION
 # =========================================================
 
-def extract_amount_tokens(row):
+def extract_amount_tokens(row, col_x):
+    """
+    IMPORTANT FIX:
+    Only treat money-looking tokens as amounts if they are positioned
+    in the right-side amount columns area (near Deposit/Withdrawal/Balance).
+    This prevents things like '382.99 PLUS 1500' in description from becoming credit.
+    """
     out = []
+    # allow small drift to the left of Deposit column
+    min_amount_x = col_x["deposit_x"] - 25
+
     for w in row:
-        if re.fullmatch(r"[\d,]+\.\d{2}", w["text"]):
-            out.append({"x": w["x0"], "value": float(w["text"].replace(",", ""))})
+        t = w["text"].strip()
+        if re.fullmatch(r"[\d,]+\.\d{2}", t):
+            # FILTER BY X: ignore numeric tokens inside description area
+            if w["x0"] >= min_amount_x:
+                out.append({"x": w["x0"], "value": float(t.replace(",", ""))})
+
     return out
 
 
@@ -192,8 +193,7 @@ def extract_desc_tokens(row):
             continue
         if re.fullmatch(r"\d{2}-\d{2}-\d{4}", t):
             continue
-        if re.fullmatch(r"[\d,]+\.\d{2}", t):
-            continue
+        # keep numeric tokens in description if you want, but they won't be treated as amounts now
         if is_noise(t):
             continue
         out.append(t)
@@ -201,17 +201,10 @@ def extract_desc_tokens(row):
 
 
 # =========================================================
-# AMOUNT CLASSIFICATION USING COLUMN X
+# AMOUNT CLASSIFICATION USING COLUMN X (ignore balance column)
 # =========================================================
 
 def classify_amounts_by_columns(amount_words, col_x):
-    """
-    Assign each amount to nearest of (deposit, withdrawal, balance) columns by X distance.
-    Then:
-      - credit = sum(deposit column)
-      - debit  = sum(withdrawal column)
-      - ignore balance column entirely
-    """
     credit = 0.0
     debit = 0.0
 
@@ -223,7 +216,6 @@ def classify_amounts_by_columns(amount_words, col_x):
         x = a["x"]
         val = a["value"]
 
-        # nearest-column assignment
         dist_dep = abs(x - dep)
         dist_wdr = abs(x - wdr)
         dist_bal = abs(x - bal)
@@ -240,7 +232,7 @@ def classify_amounts_by_columns(amount_words, col_x):
 
 
 # =========================================================
-# FILTERS
+# FILTERS / CLEANUP
 # =========================================================
 
 def is_total_row(row):
