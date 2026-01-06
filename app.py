@@ -14,6 +14,7 @@ from rhb import parse_transactions_rhb
 from cimb import parse_transactions_cimb
 from bank_islam import parse_bank_islam
 from bank_rakyat import parse_bank_rakyat
+from hong_leong import parse_hong_leong
 
 
 # ---------------------------------------------------
@@ -158,6 +159,9 @@ if uploaded_files and st.session_state.status == "running":
 
                 elif bank_choice == "Agro Bank":
                     tx = parse_agro_bank(pdf, uploaded_file.name)
+
+                elif bank_choice == "Hong Leong":
+                    tx = parse_hong_leong(pdf, uploaded_file.name)
                 
                 elif bank_choice == "Affin Bank":
                     tx = parse_affin_bank(pdf, uploaded_file.name)
