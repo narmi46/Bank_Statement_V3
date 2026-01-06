@@ -50,17 +50,17 @@ if "results" not in st.session_state:
 bank_choice = st.selectbox(
     "Select Bank Format",
     [
-        "Maybank",
-        "Public Bank (PBB)",
-        "RHB Bank",
-        "CIMB Bank",
-        "Bank Islam",
-        "Bank Rakyat",
-        "Ambank",
-        "Affin Bank",        # ✅ NEW
-        "Bank Muamalat",      # ✅ NEW
-        "Hong Leong",
-        "Agro Bank"      # ✅ NEW
+            "Affin Bank",
+            "Agro Bank",
+            "Ambank",
+            "Bank Islam",
+            "Bank Muamalat",
+            "Bank Rakyat",
+            "CIMB Bank",
+            "Hong Leong",
+            "Maybank",
+            "Public Bank (PBB)",
+            "RHB Bank"
     ]
 )
 
