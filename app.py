@@ -2,15 +2,11 @@ import streamlit as st
 import pdfplumber
 import json
 import pandas as pd
-from datetime import datetime
 from io import BytesIO
-from collections import defaultdict
-import re
-
-
+from datetime import datetime
 
 # ---------------------------------------------------
-# Import standalone parsers (EXISTING)
+# BANK PARSERS (EXISTING)
 # ---------------------------------------------------
 from maybank import parse_transactions_maybank
 from public_bank import parse_transactions_pbb
@@ -24,50 +20,52 @@ from bank_muamalat import parse_transactions_bank_muamalat
 from affin_bank import parse_affin_bank
 from agro_bank import parse_agro_bank
 
+# ---------------------------------------------------
+# FRAUD ENGINE
+# ---------------------------------------------------
 from fraud import run_fraud_detection
 
 
 # ---------------------------------------------------
-# Streamlit Setup
+# STREAMLIT SETUP
 # ---------------------------------------------------
 st.set_page_config(page_title="Bank Statement Parser", layout="wide")
 st.title("📄 Bank Statement Parser (Multi-File Support)")
-st.write("Upload one or more bank statement PDFs to extract transactions.")
 
 
 # ---------------------------------------------------
-# Session State
+# SESSION STATE
 # ---------------------------------------------------
 if "status" not in st.session_state:
-    st.session_state.status = "idle"    # idle, running, stopped
+    st.session_state.status = "idle"
 
 if "results" not in st.session_state:
     st.session_state.results = []
 
 
 # ---------------------------------------------------
-# Bank Selection
+# BANK SELECTION
 # ---------------------------------------------------
 bank_choice = st.selectbox(
     "Select Bank Format",
     [
-            "Affin Bank",
-            "Agro Bank",
-            "Ambank",
-            "Bank Islam",
-            "Bank Muamalat",
-            "Bank Rakyat",
-            "CIMB Bank",
-            "Hong Leong",
-            "Maybank",
-            "Public Bank (PBB)",
-            "RHB Bank"
+        "Affin Bank",
+        "Agro Bank",
+        "Ambank",
+        "Bank Islam",
+        "Bank Muamalat",
+        "Bank Rakyat",
+        "CIMB Bank",
+        "Hong Leong",
+        "Maybank",
+        "Public Bank (PBB)",
+        "RHB Bank"
     ]
 )
 
 
 # ---------------------------------------------------
-# File Upload
+# FILE UPLOAD
 # ---------------------------------------------------
 uploaded_files = st.file_uploader(
     "Upload PDF files",
@@ -75,13 +73,12 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
-# Sort uploaded files by name
 if uploaded_files:
     uploaded_files = sorted(uploaded_files, key=lambda x: x.name)
 
 
 # ---------------------------------------------------
-# Start / Stop / Reset Controls
+# CONTROLS
 # ---------------------------------------------------
 col1, col2, col3 = st.columns(3)
 
@@ -109,157 +106,88 @@ all_tx = []
 
 if uploaded_files and st.session_state.status == "running":
 
-    bank_display_box = st.empty()
     progress_bar = st.progress(0)
-
     total_files = len(uploaded_files)
 
-    for file_idx, uploaded_file in enumerate(uploaded_files):
+    for idx, uploaded_file in enumerate(uploaded_files):
 
         if st.session_state.status == "stopped":
-            st.warning("⏹️ Processing stopped by user.")
             break
 
-        st.write(f"### 🗂️ Processing File: **{uploaded_file.name}**")
-        bank_display_box.info(f"📄 Processing {bank_choice}: {uploaded_file.name}...")
+        with pdfplumber.open(uploaded_file) as pdf:
 
-        try:
-            with pdfplumber.open(uploaded_file) as pdf:
-
+            if bank_choice == "Maybank":
+                tx = parse_transactions_maybank(pdf, uploaded_file.name)
+            elif bank_choice == "Public Bank (PBB)":
+                tx = parse_transactions_pbb(pdf, uploaded_file.name)
+            elif bank_choice == "RHB Bank":
+                tx = parse_transactions_rhb(uploaded_file, uploaded_file.name)
+            elif bank_choice == "CIMB Bank":
+                tx = parse_transactions_cimb(pdf, uploaded_file.name)
+            elif bank_choice == "Ambank":
+                tx = parse_ambank(pdf, uploaded_file.name)
+            elif bank_choice == "Bank Islam":
+                tx = parse_bank_islam(pdf, uploaded_file.name)
+            elif bank_choice == "Bank Rakyat":
+                tx = parse_bank_rakyat(pdf, uploaded_file.name)
+            elif bank_choice == "Bank Muamalat":
+                tx = parse_transactions_bank_muamalat(pdf, uploaded_file.name)
+            elif bank_choice == "Agro Bank":
+                tx = parse_agro_bank(pdf, uploaded_file.name)
+            elif bank_choice == "Hong Leong":
+                tx = parse_hong_leong(pdf, uploaded_file.name)
+            elif bank_choice == "Affin Bank":
+                tx = parse_affin_bank(pdf, uploaded_file.name)
+            else:
                 tx = []
 
-                if bank_choice == "Maybank":
-                    tx = parse_transactions_maybank(pdf, uploaded_file.name)
+        all_tx.extend(tx)
+        progress_bar.progress((idx + 1) / total_files)
 
-                elif bank_choice == "Public Bank (PBB)":
-                    tx = parse_transactions_pbb(pdf, uploaded_file.name)
-                    
-                elif bank_choice == "RHB Bank":
-                    tx = parse_transactions_rhb(uploaded_file, uploaded_file.name)
-
-                #elif bank_choice == "RHB Bank":
-                #   tx = parse_transactions_rhb(pdf, uploaded_file.name)
-
-                elif bank_choice == "CIMB Bank":
-                    tx = parse_transactions_cimb(pdf, uploaded_file.name)
-                                
-                elif bank_choice == "Ambank":
-                    tx = parse_ambank(pdf, uploaded_file.name)
-
-                elif bank_choice == "Bank Islam":
-                    tx = parse_bank_islam(pdf, uploaded_file.name)
-
-                elif bank_choice == "Bank Rakyat":
-                    tx = parse_bank_rakyat(pdf, uploaded_file.name)
-
-                # ---------------------------------------------------
-                # NEW BANKS (ADDED ONLY)
-                # ---------------------------------------------------
-
-                elif bank_choice == "Bank Muamalat":
-                    tx = parse_transactions_bank_muamalat(pdf, uploaded_file.name)
-
-                elif bank_choice == "Agro Bank":
-                    tx = parse_agro_bank(pdf, uploaded_file.name)
-
-                elif bank_choice == "Hong Leong":
-                    tx = parse_hong_leong(pdf, uploaded_file.name)
-                
-                elif bank_choice == "Affin Bank":
-                    tx = parse_affin_bank(pdf, uploaded_file.name)
-
-                if tx:
-                    st.success(f"✅ Extracted {len(tx)} transactions from {uploaded_file.name}")
-                    all_tx.extend(tx)
-                else:
-                    st.warning(f"⚠️ No transactions found in {uploaded_file.name}")
-
-        except Exception as e:
-            st.error(f"❌ Error processing {uploaded_file.name}: {e}")
-
-        progress = (file_idx + 1) / total_files
-        progress_bar.progress(progress)
-
-    bank_display_box.success(f"🏦 Completed processing: **{bank_choice}**")
     st.session_state.results = all_tx
 
 
 # ---------------------------------------------------
-# CALCULATE MONTHLY SUMMARY
+# DISPLAY RESULTS
 # ---------------------------------------------------
-def calculate_monthly_summary(transactions):
-    if not transactions:
-        return []
+if st.session_state.results:
 
-    df = pd.DataFrame(transactions)
+    df = pd.DataFrame(st.session_state.results)
 
-    df['date_parsed'] = pd.to_datetime(df['date'], errors='coerce')
-    df = df.dropna(subset=['date_parsed'])
+    st.subheader("📊 Extracted Transactions")
+    st.dataframe(df, use_container_width=True)
 
-    if df.empty:
-        st.warning("⚠️ No valid transaction dates found.")
-        return []
+    # ---------------------------------------------------
+    # FRAUD DETECTION (FINAL)
+    # ---------------------------------------------------
+    st.markdown("---")
+    st.subheader("🕵️ Fraud Detection")
 
-    df['month_period'] = df['date_parsed'].dt.strftime('%Y-%m')
+    fraud_result = run_fraud_detection(st.session_state.results)
 
-    df['debit'] = pd.to_numeric(df['debit'], errors='coerce').fillna(0)
-    df['credit'] = pd.to_numeric(df['credit'], errors='coerce').fillna(0)
-    df['balance'] = pd.to_numeric(df['balance'], errors='coerce')
+    col1, col2 = st.columns(2)
 
-    monthly_summary = []
+    with col1:
+        st.markdown("### 🔝 Top Credit Parties")
+        st.dataframe(fraud_result["top_credit_parties"], use_container_width=True)
 
-    for period, group in df.groupby('month_period', sort=True):
+    with col2:
+        st.markdown("### 🔻 Top Debit Parties")
+        st.dataframe(fraud_result["top_debit_parties"], use_container_width=True)
 
-        ending_balance = None
-        if not group['balance'].isna().all():
-            group_sorted = group.sort_values('date_parsed')
-            balances = group_sorted['balance'].dropna()
-            if not balances.empty:
-                ending_balance = round(balances.iloc[-1], 2)
+    st.markdown("### 💰 High-Value Credit Transactions")
+    if fraud_result["high_value_credits"]:
+        st.dataframe(fraud_result["high_value_credits"], use_container_width=True)
+    else:
+        st.info("No high-value credit transactions detected.")
 
-        monthly_summary.append({
-            'month': period,
-            'transaction_count': len(group),
-            'total_debit': round(group['debit'].sum(), 2),
-            'total_credit': round(group['credit'].sum(), 2),
-            'net_change': round(group['credit'].sum() - group['debit'].sum(), 2),
-            'ending_balance': ending_balance,
-            'lowest_balance': round(group['balance'].min(), 2) if not group['balance'].isna().all() else None,
-            'highest_balance': round(group['balance'].max(), 2) if not group['balance'].isna().all() else None,
-            'source_files': ', '.join(sorted(group['source_file'].unique())) if 'source_file' in group.columns else ''
-        })
+    st.download_button(
+        "⬇️ Download Fraud Signals (JSON)",
+        json.dumps(fraud_result, indent=2),
+        "fraud_signals.json",
+        "application/json"
+    )
 
-    return sorted(monthly_summary, key=lambda x: x['month'])
-
-
-
-        # ---------------------------------------------------
-        # FRAUD DETECTION (FINAL – ONE PASS)
-        # ---------------------------------------------------
-        st.markdown("---")
-        st.subheader("🕵️ Fraud Detection (Rule-based)")
-        
-        fraud_result = run_fraud_detection(st.session_state.results)
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("### 🔝 Top Credit Parties")
-            st.dataframe(fraud_result["top_credit_parties"], use_container_width=True)
-        
-        with col2:
-            st.markdown("### 🔻 Top Debit Parties")
-            st.dataframe(fraud_result["top_debit_parties"], use_container_width=True)
-        
-        st.markdown("### 💰 High-Value Credit Transactions")
-        if fraud_result["high_value_credits"]:
-            st.dataframe(fraud_result["high_value_credits"], use_container_width=True)
-        else:
-            st.info("No high-value credit transactions detected.")
-        
-        st.download_button(
-            "⬇️ Download Fraud Signals (JSON)",
-            json.dumps(fraud_result, indent=2),
-            "fraud_signals.json",
-            "application/json"
-        )
+else:
+    if uploaded_files:
+        st.warning("⚠️ No transactions found — click Start Processing.")
