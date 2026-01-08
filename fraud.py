@@ -3,23 +3,21 @@ import re
 from collections import defaultdict
 from typing import List, Dict
 
-
-# ==========================
-# CONFIG
-# ==========================
+# ==================================================
+# CONFIGURATION
+# ==================================================
 TOP_N = 5
 HIGH_VALUE_THRESHOLD = 100_000
-THRESHOLD_MODE = "gte"   # "gte" or "lte"
+THRESHOLD_MODE = "gte"   # "gte" (>=) or "lte" (<=)
 
-
-# ==========================
+# ==================================================
 # PARTY NORMALIZATION
-# ==========================
+# ==================================================
 def normalize_party(description: str) -> str:
     if not description:
         return "UNKNOWN"
 
-    desc = description.upper()
+    desc = str(description).upper()
 
     remove_patterns = [
         r"TRANSFER TO A/C",
@@ -30,25 +28,23 @@ def normalize_party(description: str) -> str:
         r"\*",
         r"= BAKI LEGAR.*",
     ]
-
     for p in remove_patterns:
         desc = re.sub(p, "", desc)
 
     desc = re.sub(r"\s+", " ", desc).strip()
 
-    # Numeric-only references → bank clearing
+    # Numeric-only → bank clearing
     if re.fullmatch(r"[0-9 ]+", desc):
         return f"BANK_CLEARING_{desc}"
 
-    # Trim long numeric tails
+    # Trim long numeric tails (refs)
     desc = re.split(r"\d{6,}", desc)[0].strip()
 
     return desc[:80] if desc else "UNKNOWN"
 
-
-# ==========================
+# ==================================================
 # FRAUD ENGINE (ONE PASS)
-# ==========================
+# ==================================================
 def run_fraud_detection(transactions: List[Dict]) -> Dict:
     credit_by_party = defaultdict(float)
     debit_by_party = defaultdict(float)
@@ -56,7 +52,7 @@ def run_fraud_detection(transactions: List[Dict]) -> Dict:
     debit_tx_count = defaultdict(int)
     high_value_credits = []
 
-    for tx in transactions:
+    for tx in transactions or []:
         party = normalize_party(tx.get("description", ""))
 
         credit = float(tx.get("credit", 0) or 0)
@@ -81,32 +77,17 @@ def run_fraud_detection(transactions: List[Dict]) -> Dict:
             debit_by_party[party] += debit
             debit_tx_count[party] += 1
 
-    top_credit = sorted(
-        credit_by_party.items(),
-        key=lambda x: x[1],
-        reverse=True
-    )[:TOP_N]
-
-    top_debit = sorted(
-        debit_by_party.items(),
-        key=lambda x: x[1],
-        reverse=True
-    )[:TOP_N]
+    top_credit = sorted(credit_by_party.items(), key=lambda x: x[1], reverse=True)[:TOP_N]
+    top_debit = sorted(debit_by_party.items(), key=lambda x: x[1], reverse=True)[:TOP_N]
 
     return {
         "top_credit_parties": [
-            {
-                "party": p,
-                "total_credit": round(v, 2),
-                "credit_tx_count": credit_tx_count[p]
-            } for p, v in top_credit
+            {"party": p, "total_credit": round(v, 2), "credit_tx_count": credit_tx_count[p]}
+            for p, v in top_credit
         ],
         "top_debit_parties": [
-            {
-                "party": p,
-                "total_debit": round(v, 2),
-                "debit_tx_count": debit_tx_count[p]
-            } for p, v in top_debit
+            {"party": p, "total_debit": round(v, 2), "debit_tx_count": debit_tx_count[p]}
+            for p, v in top_debit
         ],
         "high_value_credits": high_value_credits,
         "config": {
