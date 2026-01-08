@@ -4,6 +4,7 @@ import json
 import pandas as pd
 from datetime import datetime
 from io import BytesIO
+import re
 
 # ---------------------------------------------------
 # Import standalone parsers (EXISTING)
@@ -231,6 +232,157 @@ def calculate_monthly_summary(transactions):
     return sorted(monthly_summary, key=lambda x: x['month'])
 
 
+
+# ---------------------------------------------------
+# SIMPLE FRAUD / COUNTERPARTY HEURISTICS (BETA)
+# ---------------------------------------------------
+def _normalize_text(s):
+    try:
+        return re.sub(r"\s+", " ", str(s or "")).strip().upper()
+    except Exception:
+        return ""
+
+def parse_party_rules(rules_json_text):
+    """
+    Expected JSON shape (example):
+    {
+      "PARTY_A": ["KEYWORD1", "KEYWORD2"],
+      "PARTY_B": ["ACME SDN BHD", "ACME"]
+    }
+    Returns dict[str, list[str]] with normalized patterns.
+    """
+    if not rules_json_text or not str(rules_json_text).strip():
+        return {}
+
+    try:
+        data = json.loads(rules_json_text)
+        if not isinstance(data, dict):
+            return {}
+        out = {}
+        for party, patterns in data.items():
+            if not party:
+                continue
+            if isinstance(patterns, str):
+                patterns = [patterns]
+            if not isinstance(patterns, list):
+                continue
+            norm_patterns = []
+            for p in patterns:
+                p2 = _normalize_text(p)
+                if p2:
+                    norm_patterns.append(p2)
+            if norm_patterns:
+                out[_normalize_text(party)] = norm_patterns
+        return out
+    except Exception:
+        return {}
+
+def extract_party_from_description(description, party_rules=None):
+    """
+    Party inference with two layers:
+    1) Optional JSON rules: first party whose pattern is a substring of normalized description wins.
+    2) Fallback heuristics for bank statement descriptions:
+       - Prefer names after common prefixes (TRANSFER TO/FR A/C, INTER-BANK PAYMENT INTO A/C, etc.)
+       - Strip obvious noise (trailing refs, '=', '*', digits-heavy tails)
+       - Normalize so '...BIN*' and '...BIN' collapse into one party label.
+    """
+    desc_raw = description or ""
+    desc = _normalize_text(desc_raw)
+
+    # Always drop noisy right-hand side after '=' (often translations / extra blobs)
+    if "=" in desc:
+        desc = desc.split("=", 1)[0].strip()
+
+    # Apply JSON mapping rules (substring match) on normalized text
+    if party_rules:
+        for party, patterns in party_rules.items():
+            for p in patterns:
+                p2 = _normalize_text(p)
+                if p2 and p2 in desc:
+                    return party
+
+    if not desc:
+        return "UNKNOWN"
+
+    # Try extract "counterparty" after common prefixes
+    prefix_patterns = [
+        r"^TRANSFER\s+TO\s+A/C\s+(.+)$",
+        r"^TRANSFER\s+FR\s+A/C\s+(.+)$",
+        r"^INTER-BANK\s+PAYMENT\s+INTO\s+A/C\s+(.+)$",
+        r"^ESI\s+PAYMENT\s+DEBIT\s+(.+)$",
+        r"^PAYMENT\s+DEBIT\s*-\s*(.+)$",
+        r"^CMS\s*-\s*CR\s+PYMT\s+(.+)$",
+        r"^ELECTRONIC\s+REMITTANCE\s*-\s*GIR\s+(.+)$",
+    ]
+    for pat in prefix_patterns:
+        mm = re.search(pat, desc, flags=re.IGNORECASE)
+        if mm:
+            desc = mm.group(1).strip()
+            break
+
+    # If it's the common MARS streams, normalize to stable buckets
+    if "MARS CIT COLLECTION" in desc:
+        return "MARS CIT COLLECTION"
+    if "MARS GPAY" in desc or "GPAY NETWORK" in desc:
+        return "MARS GPAY NETWORK"
+
+    # Cut trailing noise after '*' (often reference / note)
+    if "*" in desc:
+        desc = desc.split("*", 1)[0].strip()
+
+    # Cut common trailing tokens if they appear later in the string
+    cut_tokens = [" REF", " REFERENCE", " TRF", " TRANSFER", " DUITNOW", " FPX", " ATM", " POS", " CDM", " CASH", " ONLINE"]
+    for t in cut_tokens:
+        idx = desc.find(t)
+        if idx > 8:
+            desc = desc[:idx].strip()
+            break
+
+    # Keep letters/numbers/& and normalize whitespace
+    desc = re.sub(r"[^A-Z0-9 &]", " ", desc)
+    desc = re.sub(r"\s+", " ", desc).strip()
+
+    # Keep first 8 words (a bit wider than 5 to capture 'SDN BHD' fully)
+    words = desc.split()
+    return " ".join(words[:8]) if words else "UNKNOWN"
+
+def top_parties_by_amount(df, top_n=5):
+    if df.empty or "description" not in df.columns:
+        return pd.DataFrame(), pd.DataFrame()
+
+    tmp = df.copy()
+
+    tmp["debit_num"] = pd.to_numeric(tmp.get("debit", 0), errors="coerce").fillna(0.0)
+    tmp["credit_num"] = pd.to_numeric(tmp.get("credit", 0), errors="coerce").fillna(0.0)
+
+    # default: no rules
+    party_rules = {}
+
+    # party already computed upstream if exists
+    if "party" not in tmp.columns:
+        tmp["party"] = tmp["description"].apply(lambda x: extract_party_from_description(x, party_rules))
+
+    credit_top = (
+        tmp.groupby("party", dropna=False)["credit_num"]
+           .sum()
+           .sort_values(ascending=False)
+           .head(int(top_n))
+           .reset_index()
+           .rename(columns={"credit_num": "total_credit"})
+    )
+
+    debit_top = (
+        tmp.groupby("party", dropna=False)["debit_num"]
+           .sum()
+           .sort_values(ascending=False)
+           .head(int(top_n))
+           .reset_index()
+           .rename(columns={"debit_num": "total_debit"})
+    )
+
+    return credit_top, debit_top
+
+
 # ---------------------------------------------------
 # DISPLAY RESULTS
 # ---------------------------------------------------
@@ -268,6 +420,91 @@ if st.session_state.results:
         with col4:
             net_total = summary_df['net_change'].sum()
             st.metric("Net Change", f"RM {net_total:,.2f}")
+
+
+    # ---------------------------------------------------
+    # FRAUD DETECTION (START SMALL) - TOP COUNTERPARTIES + HIGH VALUE CREDITS
+    # ---------------------------------------------------
+    st.markdown("---")
+    with st.expander("🕵️ Fraud detection (beta): Top 5 parties + high-value credits", expanded=False):
+
+        st.caption("Start small: group by 'party' inferred from transaction description. You can optionally provide matching rules as JSON.")
+
+        default_rules_example = {
+            "ACME SDN BHD": ["ACME", "ACME SDN", "ACME SDN BHD"],
+            "XYZ TRADING": ["XYZ TRADING", "XYZ TRDG"]
+        }
+
+        rules_text = st.text_area(
+            "Party matching rules (JSON, optional)",
+            value=json.dumps(default_rules_example, indent=2),
+            height=160
+        )
+
+        top_n = st.number_input("Top N parties", min_value=1, max_value=50, value=5, step=1)
+
+        threshold = st.number_input("High-value credit threshold (RM)", min_value=0.0, value=100000.0, step=1000.0, format="%.2f")
+        threshold_mode = st.selectbox("High-value rule", ["Credit ≥ threshold", "Credit ≤ threshold"], index=0)
+
+        party_rules = parse_party_rules(rules_text)
+
+        df_fd = df.copy()
+        df_fd["debit_num"] = pd.to_numeric(df_fd.get("debit", 0), errors="coerce").fillna(0.0)
+        df_fd["credit_num"] = pd.to_numeric(df_fd.get("credit", 0), errors="coerce").fillna(0.0)
+        df_fd["party"] = df_fd["description"].apply(lambda x: extract_party_from_description(x, party_rules))
+
+        credit_top = (
+            df_fd.groupby("party", dropna=False)["credit_num"]
+                .sum()
+                .sort_values(ascending=False)
+                .head(int(top_n))
+                .reset_index()
+                .rename(columns={"credit_num": "total_credit"})
+        )
+
+        debit_top = (
+            df_fd.groupby("party", dropna=False)["debit_num"]
+                .sum()
+                .sort_values(ascending=False)
+                .head(int(top_n))
+                .reset_index()
+                .rename(columns={"debit_num": "total_debit"})
+        )
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.subheader("Top parties by total CREDIT")
+            st.dataframe(credit_top, use_container_width=True)
+        with col_b:
+            st.subheader("Top parties by total DEBIT")
+            st.dataframe(debit_top, use_container_width=True)
+
+        if threshold_mode == "Credit ≥ threshold":
+            high_value = df_fd[(df_fd["credit_num"] > 0) & (df_fd["credit_num"] >= float(threshold))].copy()
+        else:
+            high_value = df_fd[(df_fd["credit_num"] > 0) & (df_fd["credit_num"] <= float(threshold))].copy()
+
+        high_value = high_value.sort_values("credit_num", ascending=False)
+
+        st.subheader("High-value CREDIT transactions")
+        st.dataframe(
+            high_value[["date", "description", "party", "credit_num", "debit_num", "balance", "bank", "source_file"]]
+                if not high_value.empty else pd.DataFrame(columns=["date","description","party","credit_num"]),
+            use_container_width=True
+        )
+
+        st.download_button(
+            "⬇️ Download fraud signals (JSON)",
+            json.dumps({
+                "top_credit_parties": credit_top.to_dict(orient="records"),
+                "top_debit_parties": debit_top.to_dict(orient="records"),
+                "high_value_credits": high_value.to_dict(orient="records"),
+                "config": {"top_n": int(top_n), "threshold": float(threshold), "threshold_mode": threshold_mode}
+            }, indent=2, default=str),
+            "fraud_signals.json",
+            "application/json"
+        )
+
 
     # ---------------------------------------------------
     # DOWNLOAD OPTIONS
