@@ -4,19 +4,19 @@ from collections import defaultdict
 from typing import List, Dict
 
 
-# ==========================
-# CONFIG
-# ==========================
+# ==================================================
+# CONFIGURATION
+# ==================================================
 TOP_N = 5
 HIGH_VALUE_THRESHOLD = 100_000
-THRESHOLD_MODE = "gte"   # "gte" or "lte"
+THRESHOLD_MODE = "gte"   # "gte" (>=) or "lte" (<=)
 
 
-# ==========================
-# COMMON NORMALIZER
-# ==========================
-def normalize_text(s: str) -> str:
-    return re.sub(r"\s+", " ", str(s or "")).strip().upper()
+# ==================================================
+# NORMALIZATION UTILITIES
+# ==================================================
+def normalize_text(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip().upper()
 
 
 def normalize_party(description: str) -> str:
@@ -35,8 +35,10 @@ def normalize_party(description: str) -> str:
     for p in remove_patterns:
         desc = re.sub(p, "", desc)
 
+    # Remove long numeric tails (references)
     desc = re.sub(r"\d{6,}", "", desc).strip()
 
+    # Numeric-only references → bank clearing bucket
     if re.fullmatch(r"[0-9 ]+", desc):
         return f"BANK_CLEARING_{desc}"
 
@@ -44,7 +46,7 @@ def normalize_party(description: str) -> str:
 
 
 # ==================================================
-# PARSER 1: TOP PARTIES + HIGH VALUE
+# PARSER 1: TOP PARTIES + HIGH-VALUE CREDITS
 # ==================================================
 def parse_top_parties_and_high_value(transactions: List[Dict]) -> Dict:
     credit_by_party = defaultdict(float)
@@ -78,17 +80,32 @@ def parse_top_parties_and_high_value(transactions: List[Dict]) -> Dict:
             debit_by_party[party] += debit
             debit_tx_count[party] += 1
 
-    top_credit = sorted(credit_by_party.items(), key=lambda x: x[1], reverse=True)[:TOP_N]
-    top_debit = sorted(debit_by_party.items(), key=lambda x: x[1], reverse=True)[:TOP_N]
+    top_credit = sorted(
+        credit_by_party.items(),
+        key=lambda x: x[1],
+        reverse=True
+    )[:TOP_N]
+
+    top_debit = sorted(
+        debit_by_party.items(),
+        key=lambda x: x[1],
+        reverse=True
+    )[:TOP_N]
 
     return {
         "top_credit_parties": [
-            {"party": p, "total_credit": round(v, 2), "credit_tx_count": credit_tx_count[p]}
-            for p, v in top_credit
+            {
+                "party": p,
+                "total_credit": round(v, 2),
+                "credit_tx_count": credit_tx_count[p]
+            } for p, v in top_credit
         ],
         "top_debit_parties": [
-            {"party": p, "total_debit": round(v, 2), "debit_tx_count": debit_tx_count[p]}
-            for p, v in top_debit
+            {
+                "party": p,
+                "total_debit": round(v, 2),
+                "debit_tx_count": debit_tx_count[p]
+            } for p, v in top_debit
         ],
         "high_value_credits": high_value_credits
     }
