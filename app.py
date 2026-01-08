@@ -8,64 +8,64 @@ from io import BytesIO
 # ---------------------------------------------------
 # Import standalone parsers (EXISTING)
 # ---------------------------------------------------
-    from maybank import parse_transactions_maybank
-    from public_bank import parse_transactions_pbb
-    from rhb import parse_transactions_rhb
-    from cimb import parse_transactions_cimb
-    from bank_islam import parse_bank_islam
-    from bank_rakyat import parse_bank_rakyat
-    from hong_leong import parse_hong_leong
-    from ambank import parse_ambank
-    from bank_muamalat import parse_transactions_bank_muamalat
-    from affin_bank import parse_affin_bank
-    from agro_bank import parse_agro_bank
+from maybank import parse_transactions_maybank
+from public_bank import parse_transactions_pbb
+from rhb import parse_transactions_rhb
+from cimb import parse_transactions_cimb
+from bank_islam import parse_bank_islam
+from bank_rakyat import parse_bank_rakyat
+from hong_leong import parse_hong_leong
+from ambank import parse_ambank
+from bank_muamalat import parse_transactions_bank_muamalat
+from affin_bank import parse_affin_bank
+from agro_bank import parse_agro_bank
 
 # ---------------------------------------------------
 # Import fraud detection parser
 # ---------------------------------------------------
 
-    from fraud import (
-        parse_top_parties_and_high_value,
-        parse_inter_transactions
-    )
+from fraud import (
+    parse_top_parties_and_high_value,
+    parse_inter_transactions
+)
 
 # ---------------------------------------------------
 # Streamlit Setup
 # ---------------------------------------------------
-    st.set_page_config(page_title="Bank Statement Parser", layout="wide")
-    st.title("📄 Bank Statement Parser (Multi-File Support)")
-    st.write("Upload one or more bank statement PDFs to extract transactions.")
+st.set_page_config(page_title="Bank Statement Parser", layout="wide")
+st.title("📄 Bank Statement Parser (Multi-File Support)")
+st.write("Upload one or more bank statement PDFs to extract transactions.")
 
 
 # ---------------------------------------------------
 # Session State
 # ---------------------------------------------------
-    if "status" not in st.session_state:
-        st.session_state.status = "idle"    # idle, running, stopped
+if "status" not in st.session_state:
+    st.session_state.status = "idle"    # idle, running, stopped
 
-    if "results" not in st.session_state:
-        st.session_state.results = []
+if "results" not in st.session_state:
+    st.session_state.results = []
 
 
 # ---------------------------------------------------
 # Bank Selection
 # ---------------------------------------------------
-    bank_choice = st.selectbox(
-        "Select Bank Format",
-        [
-                "Affin Bank",
-                "Agro Bank",
-                "Ambank",
-                "Bank Islam",
-                "Bank Muamalat",
-                "Bank Rakyat",
-                "CIMB Bank",
-                "Hong Leong",
-                "Maybank",
-                "Public Bank (PBB)",
-                "RHB Bank"
-        ]
-    )
+bank_choice = st.selectbox(
+    "Select Bank Format",
+    [
+            "Affin Bank",
+            "Agro Bank",
+            "Ambank",
+            "Bank Islam",
+            "Bank Muamalat",
+            "Bank Rakyat",
+            "CIMB Bank",
+            "Hong Leong",
+            "Maybank",
+            "Public Bank (PBB)",
+            "RHB Bank"
+    ]
+)
 
 
 # ---------------------------------------------------
