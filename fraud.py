@@ -1,0 +1,117 @@
+# fraud.py
+import re
+from collections import defaultdict
+from typing import List, Dict
+
+
+# ==========================
+# CONFIG
+# ==========================
+TOP_N = 5
+HIGH_VALUE_THRESHOLD = 100_000
+THRESHOLD_MODE = "gte"   # "gte" or "lte"
+
+
+# ==========================
+# PARTY NORMALIZATION
+# ==========================
+def normalize_party(description: str) -> str:
+    if not description:
+        return "UNKNOWN"
+
+    desc = description.upper()
+
+    remove_patterns = [
+        r"TRANSFER TO A/C",
+        r"TRANSFER FR A/C",
+        r"INTER-BANK PAYMENT INTO A/C",
+        r"CMS - CR PYMT",
+        r"DUITNOW QR-",
+        r"\*",
+        r"= BAKI LEGAR.*",
+    ]
+
+    for p in remove_patterns:
+        desc = re.sub(p, "", desc)
+
+    desc = re.sub(r"\s+", " ", desc).strip()
+
+    # Numeric-only references → bank clearing
+    if re.fullmatch(r"[0-9 ]+", desc):
+        return f"BANK_CLEARING_{desc}"
+
+    # Trim long numeric tails
+    desc = re.split(r"\d{6,}", desc)[0].strip()
+
+    return desc[:80] if desc else "UNKNOWN"
+
+
+# ==========================
+# FRAUD ENGINE (ONE PASS)
+# ==========================
+def run_fraud_detection(transactions: List[Dict]) -> Dict:
+    credit_by_party = defaultdict(float)
+    debit_by_party = defaultdict(float)
+    credit_tx_count = defaultdict(int)
+    debit_tx_count = defaultdict(int)
+    high_value_credits = []
+
+    for tx in transactions:
+        party = normalize_party(tx.get("description", ""))
+
+        credit = float(tx.get("credit", 0) or 0)
+        debit = float(tx.get("debit", 0) or 0)
+
+        if credit > 0:
+            credit_by_party[party] += credit
+            credit_tx_count[party] += 1
+
+            if (
+                (THRESHOLD_MODE == "gte" and credit >= HIGH_VALUE_THRESHOLD)
+                or (THRESHOLD_MODE == "lte" and credit <= HIGH_VALUE_THRESHOLD)
+            ):
+                high_value_credits.append({
+                    "date": tx.get("date"),
+                    "party": party,
+                    "credit": round(credit, 2),
+                    "description": tx.get("description")
+                })
+
+        if debit > 0:
+            debit_by_party[party] += debit
+            debit_tx_count[party] += 1
+
+    top_credit = sorted(
+        credit_by_party.items(),
+        key=lambda x: x[1],
+        reverse=True
+    )[:TOP_N]
+
+    top_debit = sorted(
+        debit_by_party.items(),
+        key=lambda x: x[1],
+        reverse=True
+    )[:TOP_N]
+
+    return {
+        "top_credit_parties": [
+            {
+                "party": p,
+                "total_credit": round(v, 2),
+                "credit_tx_count": credit_tx_count[p]
+            } for p, v in top_credit
+        ],
+        "top_debit_parties": [
+            {
+                "party": p,
+                "total_debit": round(v, 2),
+                "debit_tx_count": debit_tx_count[p]
+            } for p, v in top_debit
+        ],
+        "high_value_credits": high_value_credits,
+        "config": {
+            "top_n": TOP_N,
+            "threshold": HIGH_VALUE_THRESHOLD,
+            "threshold_mode": f"Credit {'≥' if THRESHOLD_MODE == 'gte' else '≤'} threshold"
+        }
+    }
