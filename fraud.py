@@ -3,21 +3,24 @@ import re
 from collections import defaultdict
 from typing import List, Dict
 
-# ==================================================
-# CONFIGURATION
-# ==================================================
+
+# ==========================
+# CONFIG
+# ==========================
 TOP_N = 5
 HIGH_VALUE_THRESHOLD = 100_000
-THRESHOLD_MODE = "gte"   # "gte" (>=) or "lte" (<=)
+THRESHOLD_MODE = "gte"   # "gte" or "lte"
 
-# ==================================================
-# PARTY NORMALIZATION
-# ==================================================
+
+# ==========================
+# COMMON NORMALIZER
+# ==========================
+def normalize_text(s: str) -> str:
+    return re.sub(r"\s+", " ", str(s or "")).strip().upper()
+
+
 def normalize_party(description: str) -> str:
-    if not description:
-        return "UNKNOWN"
-
-    desc = str(description).upper()
+    desc = normalize_text(description)
 
     remove_patterns = [
         r"TRANSFER TO A/C",
@@ -28,31 +31,29 @@ def normalize_party(description: str) -> str:
         r"\*",
         r"= BAKI LEGAR.*",
     ]
+
     for p in remove_patterns:
         desc = re.sub(p, "", desc)
 
-    desc = re.sub(r"\s+", " ", desc).strip()
+    desc = re.sub(r"\d{6,}", "", desc).strip()
 
-    # Numeric-only → bank clearing
     if re.fullmatch(r"[0-9 ]+", desc):
         return f"BANK_CLEARING_{desc}"
 
-    # Trim long numeric tails (refs)
-    desc = re.split(r"\d{6,}", desc)[0].strip()
-
     return desc[:80] if desc else "UNKNOWN"
 
+
 # ==================================================
-# FRAUD ENGINE (ONE PASS)
+# PARSER 1: TOP PARTIES + HIGH VALUE
 # ==================================================
-def run_fraud_detection(transactions: List[Dict]) -> Dict:
+def parse_top_parties_and_high_value(transactions: List[Dict]) -> Dict:
     credit_by_party = defaultdict(float)
     debit_by_party = defaultdict(float)
     credit_tx_count = defaultdict(int)
     debit_tx_count = defaultdict(int)
     high_value_credits = []
 
-    for tx in transactions or []:
+    for tx in transactions:
         party = normalize_party(tx.get("description", ""))
 
         credit = float(tx.get("credit", 0) or 0)
@@ -89,10 +90,35 @@ def run_fraud_detection(transactions: List[Dict]) -> Dict:
             {"party": p, "total_debit": round(v, 2), "debit_tx_count": debit_tx_count[p]}
             for p, v in top_debit
         ],
-        "high_value_credits": high_value_credits,
-        "config": {
-            "top_n": TOP_N,
-            "threshold": HIGH_VALUE_THRESHOLD,
-            "threshold_mode": f"Credit {'≥' if THRESHOLD_MODE == 'gte' else '≤'} threshold"
-        }
+        "high_value_credits": high_value_credits
+    }
+
+
+# ==================================================
+# PARSER 2: INTER-TRANSACTION TRACE (BY COMPANY NAME)
+# ==================================================
+def parse_inter_transactions(transactions: List[Dict], company_name: str) -> Dict:
+    company_norm = normalize_text(company_name)
+
+    matched = []
+
+    for tx in transactions:
+        desc_norm = normalize_text(tx.get("description", ""))
+        party_norm = normalize_party(tx.get("description", ""))
+
+        if company_norm and (
+            company_norm in desc_norm or company_norm in party_norm
+        ):
+            matched.append(tx)
+
+    total_credit = sum(float(tx.get("credit", 0) or 0) for tx in matched)
+    total_debit = sum(float(tx.get("debit", 0) or 0) for tx in matched)
+
+    return {
+        "company_name": company_name,
+        "transaction_count": len(matched),
+        "total_credit": round(total_credit, 2),
+        "total_debit": round(total_debit, 2),
+        "net_flow": round(total_credit - total_debit, 2),
+        "transactions": matched
     }
