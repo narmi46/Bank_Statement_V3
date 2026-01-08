@@ -115,9 +115,17 @@ def parse_top_parties_and_high_value(transactions: List[Dict]) -> Dict:
 # PARSER 2: INTER-TRANSACTION TRACE (BY COMPANY NAME)
 # ==================================================
 def parse_inter_transactions(transactions: List[Dict], company_name: str) -> Dict:
+    STOPWORDS = {
+        "SDN", "BHD", "BERHAD", "ENTERPRISE", "ENT",
+        "TRADING", "TRADERS", "RESOURCES",
+        "COMPANY", "CO", "LTD", "LIMITED",
+        "PERNIAGAAN"
+    }
+
+    # Normalize + tokenize company name
     tokens = [
         t for t in normalize_text(company_name).split()
-        if len(t) >= 3 and t not in {"SDN", "BHD", "BERHAD", "ENTERPRISE", "TRADING"}
+        if len(t) >= 3 and t not in STOPWORDS
     ]
 
     matched = []
@@ -125,12 +133,15 @@ def parse_inter_transactions(transactions: List[Dict], company_name: str) -> Dic
     for tx in transactions:
         desc_norm = normalize_text(tx.get("description", ""))
         party_norm = normalize_party(tx.get("description", ""))
-
         haystack = f"{desc_norm} {party_norm}"
 
-        # ✅ require ALL words to exist (SEP + ABADI)
-        if tokens and all(t in haystack for t in tokens):
-            matched.append(tx)
+        matched_tokens = [t for t in tokens if t in haystack]
+
+        # ✅ BEST PRACTICE: match if ANY strong token exists
+        if matched_tokens:
+            tx_copy = dict(tx)
+            tx_copy["_matched_tokens"] = matched_tokens  # forensic explainability
+            matched.append(tx_copy)
 
     total_credit = sum(float(tx.get("credit", 0) or 0) for tx in matched)
     total_debit  = sum(float(tx.get("debit", 0) or 0) for tx in matched)
