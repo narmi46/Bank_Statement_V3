@@ -115,7 +115,10 @@ def parse_top_parties_and_high_value(transactions: List[Dict]) -> Dict:
 # PARSER 2: INTER-TRANSACTION TRACE (BY COMPANY NAME)
 # ==================================================
 def parse_inter_transactions(transactions: List[Dict], company_name: str) -> Dict:
-    company_norm = normalize_text(company_name)
+    tokens = [
+        t for t in normalize_text(company_name).split()
+        if len(t) >= 3 and t not in {"SDN", "BHD", "BERHAD", "ENTERPRISE", "TRADING"}
+    ]
 
     matched = []
 
@@ -123,16 +126,18 @@ def parse_inter_transactions(transactions: List[Dict], company_name: str) -> Dic
         desc_norm = normalize_text(tx.get("description", ""))
         party_norm = normalize_party(tx.get("description", ""))
 
-        if company_norm and (
-            company_norm in desc_norm or company_norm in party_norm
-        ):
+        haystack = f"{desc_norm} {party_norm}"
+
+        # ✅ require ALL words to exist (SEP + ABADI)
+        if tokens and all(t in haystack for t in tokens):
             matched.append(tx)
 
     total_credit = sum(float(tx.get("credit", 0) or 0) for tx in matched)
-    total_debit = sum(float(tx.get("debit", 0) or 0) for tx in matched)
+    total_debit  = sum(float(tx.get("debit", 0) or 0) for tx in matched)
 
     return {
         "company_name": company_name,
+        "company_tokens": tokens,
         "transaction_count": len(matched),
         "total_credit": round(total_credit, 2),
         "total_debit": round(total_debit, 2),
