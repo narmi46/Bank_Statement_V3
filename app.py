@@ -4,7 +4,10 @@ import json
 import pandas as pd
 from datetime import datetime
 from io import BytesIO
+from collections import defaultdict
 import re
+
+
 
 # ---------------------------------------------------
 # Import standalone parsers (EXISTING)
@@ -422,137 +425,148 @@ if st.session_state.results:
             st.metric("Net Change", f"RM {net_total:,.2f}")
 
 
-    # ---------------------------------------------------
-    # FRAUD DETECTION (START SMALL) - TOP COUNTERPARTIES + HIGH VALUE CREDITS
-    # ---------------------------------------------------
-    st.markdown("---")
-    with st.expander("🕵️ Fraud detection (beta): Top 5 parties + high-value credits", expanded=False):
 
-        st.caption("Start small: group by 'party' inferred from transaction description. You can optionally provide matching rules as JSON.")
+# ==================================================
+# Fraud Detection Configuration
+# ==================================================
+TOP_N = 5
+HIGH_VALUE_THRESHOLD = 100_000
+THRESHOLD_MODE = "gte"   # "gte" or "lte"
 
-        default_rules_example = {
-            "ACME SDN BHD": ["ACME", "ACME SDN", "ACME SDN BHD"],
-            "XYZ TRADING": ["XYZ TRADING", "XYZ TRDG"]
+
+# ==================================================
+# Party Normalization
+# ==================================================
+def normalize_party(description: str) -> str:
+    if not description:
+        return "UNKNOWN"
+
+    desc = description.upper()
+
+    remove_patterns = [
+        r"TRANSFER TO A/C",
+        r"TRANSFER FR A/C",
+        r"INTER-BANK PAYMENT INTO A/C",
+        r"CMS - CR PYMT",
+        r"DUITNOW QR-",
+        r"\*",
+        r"= BAKI LEGAR.*",
+    ]
+
+    for p in remove_patterns:
+        desc = re.sub(p, "", desc)
+
+    desc = re.sub(r"\s+", " ", desc).strip()
+
+    # Numeric-only descriptions → bank clearing
+    if re.fullmatch(r"[0-9 ]+", desc):
+        return f"BANK_CLEARING_{desc}"
+
+    # Trim long technical tails
+    desc = re.split(r"\d{6,}", desc)[0].strip()
+
+    return desc[:80] if desc else "UNKNOWN"
+
+
+# ==================================================
+# Fraud Detection Engine
+# ==================================================
+def run_fraud_detection(transactions):
+    credit_by_party = defaultdict(float)
+    debit_by_party = defaultdict(float)
+    high_value_credits = []
+
+    for tx in transactions:
+        party = normalize_party(tx.get("description", ""))
+
+        credit = float(tx.get("credit", 0) or 0)
+        debit = float(tx.get("debit", 0) or 0)
+
+        if credit > 0:
+            credit_by_party[party] += credit
+
+            if (
+                (THRESHOLD_MODE == "gte" and credit >= HIGH_VALUE_THRESHOLD)
+                or (THRESHOLD_MODE == "lte" and credit <= HIGH_VALUE_THRESHOLD)
+            ):
+                high_value_credits.append({
+                    "date": tx.get("date"),
+                    "party": party,
+                    "credit": credit,
+                    "description": tx.get("description")
+                })
+
+        if debit > 0:
+            debit_by_party[party] += debit
+
+    top_credit = sorted(
+        credit_by_party.items(), key=lambda x: x[1], reverse=True
+    )[:TOP_N]
+
+    top_debit = sorted(
+        debit_by_party.items(), key=lambda x: x[1], reverse=True
+    )[:TOP_N]
+
+    return {
+        "top_credit_parties": [
+            {"party": p, "total_credit": round(v, 2)}
+            for p, v in top_credit
+        ],
+        "top_debit_parties": [
+            {"party": p, "total_debit": round(v, 2)}
+            for p, v in top_debit
+        ],
+        "high_value_credits": high_value_credits,
+        "config": {
+            "top_n": TOP_N,
+            "threshold": HIGH_VALUE_THRESHOLD,
+            "threshold_mode": f"Credit {'≥' if THRESHOLD_MODE == 'gte' else '≤'} threshold"
         }
-
-        rules_text = st.text_area(
-            "Party matching rules (JSON, optional)",
-            value=json.dumps(default_rules_example, indent=2),
-            height=160
-        )
-
-        top_n = st.number_input("Top N parties", min_value=1, max_value=50, value=5, step=1)
-
-        threshold = st.number_input("High-value credit threshold (RM)", min_value=0.0, value=100000.0, step=1000.0, format="%.2f")
-        threshold_mode = st.selectbox("High-value rule", ["Credit ≥ threshold", "Credit ≤ threshold"], index=0)
-
-        party_rules = parse_party_rules(rules_text)
-
-        df_fd = df.copy()
-        df_fd["debit_num"] = pd.to_numeric(df_fd.get("debit", 0), errors="coerce").fillna(0.0)
-        df_fd["credit_num"] = pd.to_numeric(df_fd.get("credit", 0), errors="coerce").fillna(0.0)
-        df_fd["party"] = df_fd["description"].apply(lambda x: extract_party_from_description(x, party_rules))
-
-        credit_top = (
-            df_fd.groupby("party", dropna=False)["credit_num"]
-                .sum()
-                .sort_values(ascending=False)
-                .head(int(top_n))
-                .reset_index()
-                .rename(columns={"credit_num": "total_credit"})
-        )
-
-        debit_top = (
-            df_fd.groupby("party", dropna=False)["debit_num"]
-                .sum()
-                .sort_values(ascending=False)
-                .head(int(top_n))
-                .reset_index()
-                .rename(columns={"debit_num": "total_debit"})
-        )
-
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.subheader("Top parties by total CREDIT")
-            st.dataframe(credit_top, use_container_width=True)
-        with col_b:
-            st.subheader("Top parties by total DEBIT")
-            st.dataframe(debit_top, use_container_width=True)
-
-        if threshold_mode == "Credit ≥ threshold":
-            high_value = df_fd[(df_fd["credit_num"] > 0) & (df_fd["credit_num"] >= float(threshold))].copy()
-        else:
-            high_value = df_fd[(df_fd["credit_num"] > 0) & (df_fd["credit_num"] <= float(threshold))].copy()
-
-        high_value = high_value.sort_values("credit_num", ascending=False)
-
-        st.subheader("High-value CREDIT transactions")
-        st.dataframe(
-            high_value[["date", "description", "party", "credit_num", "debit_num", "balance", "bank", "source_file"]]
-                if not high_value.empty else pd.DataFrame(columns=["date","description","party","credit_num"]),
-            use_container_width=True
-        )
-
-        st.download_button(
-            "⬇️ Download fraud signals (JSON)",
-            json.dumps({
-                "top_credit_parties": credit_top.to_dict(orient="records"),
-                "top_debit_parties": debit_top.to_dict(orient="records"),
-                "high_value_credits": high_value.to_dict(orient="records"),
-                "config": {"top_n": int(top_n), "threshold": float(threshold), "threshold_mode": threshold_mode}
-            }, indent=2, default=str),
-            "fraud_signals.json",
-            "application/json"
-        )
+    }
 
 
-    # ---------------------------------------------------
-    # DOWNLOAD OPTIONS
-    # ---------------------------------------------------
-    st.subheader("⬇️ Download Options")
-    col1, col2, col3 = st.columns(3)
+# ==================================================
+# Streamlit App
+# ==================================================
+st.set_page_config(page_title="Bank Statement Analyzer", layout="wide")
+st.title("📊 Bank Statement Analyzer + Fraud Detection")
+
+uploaded_file = st.file_uploader("Upload extracted JSON", type=["json"])
+
+if uploaded_file:
+    data = json.load(uploaded_file)
+    transactions = data.get("transactions", [])
+
+    st.success(f"Loaded {len(transactions)} transactions")
+
+    # -----------------------------
+    # Fraud Detection Section
+    # -----------------------------
+    st.subheader("🚨 Fraud Detection (Rule-based)")
+
+    col1, col2 = st.columns(2)
 
     with col1:
-        st.download_button(
-            "📄 Download Transactions (JSON)",
-            json.dumps(df_display.to_dict(orient="records"), indent=4),
-            "transactions.json",
-            "application/json"
-        )
+        st.markdown("### 🔝 Top Credit Parties")
+        fraud_result = run_fraud_detection(transactions)
+        st.table(fraud_result["top_credit_parties"])
 
     with col2:
-        full_report = {
-            "summary": {
-                "total_transactions": len(df),
-                "date_range": f"{df['date'].min()} to {df['date'].max()}",
-                "total_files_processed": df['source_file'].nunique()
-            },
-            "monthly_summary": monthly_summary,
-            "transactions": df_display.to_dict(orient="records")
-        }
-        st.download_button(
-            "📊 Download Full Report (JSON)",
-            json.dumps(full_report, indent=4),
-            "full_report.json",
-            "application/json"
-        )
+        st.markdown("### 🔻 Top Debit Parties")
+        st.table(fraud_result["top_debit_parties"])
 
-    with col3:
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-            df_display.to_excel(writer, sheet_name="Transactions", index=False)
-            if monthly_summary:
-                pd.DataFrame(monthly_summary).to_excel(
-                    writer, sheet_name="Monthly Summary", index=False
-                )
+    st.markdown("### 💰 High Value Credit Transactions")
+    if fraud_result["high_value_credits"]:
+        st.table(fraud_result["high_value_credits"])
+    else:
+        st.info("No high-value credit transactions detected.")
 
-        st.download_button(
-            "📊 Download Full Report (XLSX)",
-            output.getvalue(),
-            "full_report.xlsx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-else:
-    if uploaded_files:
-        st.warning("⚠️ No transactions found — click **Start Processing**.")
+    # -----------------------------
+    # Export
+    # -----------------------------
+    st.download_button(
+        "⬇️ Download Fraud Signals (JSON)",
+        json.dumps(fraud_result, indent=2),
+        file_name="fraud_signals.json",
+        mime="application/json"
+    )
