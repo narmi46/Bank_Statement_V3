@@ -319,10 +319,6 @@ if st.session_state.results:
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-else:
-    if uploaded_files:
-        st.warning("⚠️ No transactions found — click **Start Processing**.")
-
 
     # ================================================================================================== # 
     
@@ -399,3 +395,6 @@ else:
     else:
         st.info("Enter a company name above to run inter-transaction tracing.")
 
+else:
+    if uploaded_files:
+        st.warning("⚠️ No transactions found — click **Start Processing**.")
