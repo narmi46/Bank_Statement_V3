@@ -1,7 +1,7 @@
-# fraud.py
+# fraud_parser.py
 import re
 from collections import defaultdict
-from typing import List, Dict
+from typing import Any, Dict, List
 
 
 # ==================================================
@@ -45,6 +45,38 @@ def normalize_party(description: str) -> str:
     return desc[:80] if desc else "UNKNOWN"
 
 
+def safe_float(value: Any) -> float:
+    """Convert numeric strings to float safely.
+    Handles None, empty strings, commas, and (1,234.56) parentheses negatives.
+    """
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    s = str(value).strip()
+    if not s:
+        return 0.0
+
+    neg = False
+    if s.startswith("(") and s.endswith(")"):
+        neg = True
+        s = s[1:-1].strip()
+
+    # remove commas and non-numeric symbols (keeps minus and dot)
+    s = s.replace(",", "")
+    s = re.sub(r"[^0-9.\-]", "", s)
+
+    if s in {"", "-", "."}:
+        return 0.0
+
+    try:
+        f = float(s)
+        return -f if neg else f
+    except Exception:
+        return 0.0
+
+
 # ==================================================
 # PARSER 1: TOP PARTIES + HIGH-VALUE CREDITS
 # ==================================================
@@ -58,8 +90,8 @@ def parse_top_parties_and_high_value(transactions: List[Dict]) -> Dict:
     for tx in transactions:
         party = normalize_party(tx.get("description", ""))
 
-        credit = float(tx.get("credit", 0) or 0)
-        debit = float(tx.get("debit", 0) or 0)
+        credit = safe_float(tx.get("credit", 0))
+        debit = safe_float(tx.get("debit", 0))
 
         if credit > 0:
             credit_by_party[party] += credit
@@ -122,7 +154,6 @@ def parse_inter_transactions(transactions: List[Dict], company_name: str) -> Dic
         "PERNIAGAAN"
     }
 
-    # Normalize + tokenize company name
     tokens = [
         t for t in normalize_text(company_name).split()
         if len(t) >= 3 and t not in STOPWORDS
@@ -137,14 +168,14 @@ def parse_inter_transactions(transactions: List[Dict], company_name: str) -> Dic
 
         matched_tokens = [t for t in tokens if t in haystack]
 
-        # ✅ BEST PRACTICE: match if ANY strong token exists
+        # match if ANY strong token exists
         if matched_tokens:
             tx_copy = dict(tx)
-            tx_copy["_matched_tokens"] = matched_tokens  # forensic explainability
+            tx_copy["_matched_tokens"] = matched_tokens
             matched.append(tx_copy)
 
-    total_credit = sum(float(tx.get("credit", 0) or 0) for tx in matched)
-    total_debit  = sum(float(tx.get("debit", 0) or 0) for tx in matched)
+    total_credit = sum(safe_float(tx.get("credit", 0)) for tx in matched)
+    total_debit  = sum(safe_float(tx.get("debit", 0)) for tx in matched)
 
     return {
         "company_name": company_name,
