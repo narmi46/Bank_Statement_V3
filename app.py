@@ -21,15 +21,6 @@ from affin_bank import parse_affin_bank
 from agro_bank import parse_agro_bank
 
 # ---------------------------------------------------
-# Import fraud detection parser
-# ---------------------------------------------------
-
-from fraud import (
-    parse_top_parties_and_high_value,
-    parse_inter_transactions
-)
-
-# ---------------------------------------------------
 # Streamlit Setup
 # ---------------------------------------------------
 st.set_page_config(page_title="Bank Statement Parser", layout="wide")
@@ -318,82 +309,6 @@ if st.session_state.results:
             "full_report.xlsx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-
-
-    # ================================================================================================== # 
-    
-
-    # ---------------------------------------------------
-    # FRAUD ANALYSIS (ADDED – DOES NOT REMOVE ANYTHING)
-    # ---------------------------------------------------
-    st.markdown("---")
-    st.subheader("🕵️ Fraud Analysis")
-
-    # =================================================
-    # COMPANY NAME INPUT (REFERENCE FIRST)
-    # =================================================
-    company_name = st.text_input(
-        "🏢 Company name for inter-transaction tracing",
-        placeholder="e.g. MAZA SDN BHD"
-    )
-
-    # =================================================
-    # PARSER 1: TOP PARTIES + HIGH VALUE
-    # =================================================
-    st.markdown("### 1️⃣ Top Parties & High-Value Credits")
-
-    fraud_summary = parse_top_parties_and_high_value(
-        st.session_state.results
-    )
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown("#### 🔝 Top Credit Parties")
-        st.dataframe(fraud_summary["top_credit_parties"], use_container_width=True)
-
-    with col2:
-        st.markdown("#### 🔻 Top Debit Parties")
-        st.dataframe(fraud_summary["top_debit_parties"], use_container_width=True)
-
-    st.markdown("#### 💰 High-Value Credit Transactions")
-    if fraud_summary["high_value_credits"]:
-        st.dataframe(fraud_summary["high_value_credits"], use_container_width=True)
-    else:
-        st.info("No high-value credit transactions detected.")
-
-    # =================================================
-    # PARSER 2: INTER-TRANSACTION TRACE
-    # =================================================
-    st.markdown("---")
-    st.markdown("### 2️⃣ Inter-Transaction Trace")
-
-    if company_name.strip():
-        trace_result = parse_inter_transactions(
-            st.session_state.results,
-            company_name
-        )
-
-        st.markdown("#### Summary")
-        st.json({
-            "company": trace_result["company_name"],
-            "transaction_count": trace_result["transaction_count"],
-            "total_credit": trace_result["total_credit"],
-            "total_debit": trace_result["total_debit"],
-            "net_flow": trace_result["net_flow"]
-        })
-
-        st.markdown("#### Matched Transactions")
-        st.dataframe(trace_result["transactions"], use_container_width=True)
-
-        st.download_button(
-            "⬇️ Download Inter-Transaction Trace (JSON)",
-            json.dumps(trace_result, indent=2),
-            f"inter_trace_{company_name}.json",
-            "application/json"
-        )
-    else:
-        st.info("Enter a company name above to run inter-transaction tracing.")
 
 else:
     if uploaded_files:
