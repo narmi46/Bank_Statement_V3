@@ -171,90 +171,113 @@ def parse_transactions_maybank(pdf_input, source_filename):
 
         return desc_by_y
 
-    def parse_classic():
-        transactions = []
-        previous_balance = None
-
-        for page_index, page in enumerate(doc):
-            words = page.get_text("words")
-            rows, _ = _group_lines(words)
-
-            # ✅ multiline descriptions keyed by y of txn-start line
-            desc_by_y = _extract_desc_map_classic(page)
-
-            rows.sort(key=lambda r: (r["y0"], r["x0"]))
-            used_y = set()
-
-            for r in rows:
-                token = r["text"]
-                if not DATE_RE_A_TOKEN.match(token):
-                    continue
-
-                y = r["y0"]
-                if y in used_y:
-                    continue
-
-                # amounts on the same line
-                line = [w for w in rows if abs(w["y0"] - y) <= 1.8]
-                line.sort(key=lambda w: w["x0"])
-
-                date_iso = norm_date_a(token, statement_year)
-                if not date_iso:
-                    continue
-
-                amounts = []
-                for w in line:
-                    if AMOUNT_RE_A.match(w["text"]):
-                        amounts.append((w["x0"], w["text"]))
-
-                if not amounts:
-                    continue
-
-                amounts.sort(key=lambda a: a[0])
-                balance_val, _ = parse_amt_a(amounts[-1][1])
-
-                txn_val = txn_sign = None
-                if len(amounts) > 1:
-                    txn_val, txn_sign = parse_amt_a(amounts[-2][1])
-
-                # ✅ description from multiline extractor
-                description = desc_by_y.get(y, "").strip()
-
-                debit = credit = 0.0
-                if previous_balance is not None:
-                    delta = round(balance_val - previous_balance, 2)
-                    if delta > 0:
-                        credit = abs(delta)
-                    elif delta < 0:
-                        debit = abs(delta)
+        def parse_classic():
+            transactions = []
+            previous_balance = None
+        
+            # -------------------------------------------------
+            # NEW: Explicitly detect opening balance (page 1)
+            # -------------------------------------------------
+            for page_index, page in enumerate(doc):
+                if page_index > 0:
+                    break
+        
+                page_text = page.get_text("text").upper()
+                m = re.search(r"BEGINNING BALANCE\s+([\d,]+\.\d{2})", page_text)
+                if m:
+                    previous_balance = float(m.group(1).replace(",", ""))
+                break  # scan first page only
+        
+            # -------------------------------------------------
+            # NORMAL TRANSACTION PARSING
+            # -------------------------------------------------
+            for page_index, page in enumerate(doc):
+                words = page.get_text("words")
+                rows, _ = _group_lines(words)
+        
+                # multiline descriptions keyed by y of txn-start line
+                desc_by_y = _extract_desc_map_classic(page)
+        
+                rows.sort(key=lambda r: (r["y0"], r["x0"]))
+                used_y = set()
+        
+                for r in rows:
+                    token = r["text"]
+                    if not DATE_RE_A_TOKEN.match(token):
+                        continue
+        
+                    y = r["y0"]  # ✅ REQUIRED
+        
+                    if y in used_y:
+                        continue
+        
+                    # collect same-line tokens
+                    line = [w for w in rows if abs(w["y0"] - y) <= 1.8]
+                    line.sort(key=lambda w: w["x0"])
+        
+                    # ✅ skip BEGINNING BALANCE row
+                    line_text = " ".join(w["text"] for w in line).upper()
+                    if "BEGINNING BALANCE" in line_text:
+                        used_y.add(y)
+                        continue
+        
+                    date_iso = norm_date_a(token, statement_year)
+                    if not date_iso:
+                        continue
+        
+                    amounts = []
+                    for w in line:
+                        if AMOUNT_RE_A.match(w["text"]):
+                            amounts.append((w["x0"], w["text"]))
+        
+                    if not amounts:
+                        continue
+        
+                    amounts.sort(key=lambda a: a[0])
+                    balance_val, _ = parse_amt_a(amounts[-1][1])
+        
+                    txn_val = txn_sign = None
+                    if len(amounts) > 1:
+                        txn_val, txn_sign = parse_amt_a(amounts[-2][1])
+        
+                    description = desc_by_y.get(y, "").strip()
+        
+                    debit = credit = 0.0
+                    if previous_balance is not None:
+                        delta = round(balance_val - previous_balance, 2)
+                        if delta > 0:
+                            credit = abs(delta)
+                        elif delta < 0:
+                            debit = abs(delta)
+                        else:
+                            if txn_sign == "+" and txn_val is not None:
+                                credit = txn_val
+                            elif txn_sign == "-" and txn_val is not None:
+                                debit = txn_val
                     else:
                         if txn_sign == "+" and txn_val is not None:
                             credit = txn_val
                         elif txn_sign == "-" and txn_val is not None:
                             debit = txn_val
-                else:
-                    if txn_sign == "+" and txn_val is not None:
-                        credit = txn_val
-                    elif txn_sign == "-" and txn_val is not None:
-                        debit = txn_val
+        
+                    used_y.add(y)
+                    transactions.append(
+                        {
+                            "date": date_iso,
+                            "description": description,
+                            "debit": round(debit, 2),
+                            "credit": round(credit, 2),
+                            "balance": round(balance_val, 2),
+                            "page": page_index + 1,
+                            "bank": bank_name,
+                            "source_file": source_filename,
+                        }
+                    )
+        
+                    previous_balance = balance_val
+        
+            return transactions
 
-                used_y.add(y)
-                transactions.append(
-                    {
-                        "date": date_iso,
-                        "description": description,
-                        "debit": round(debit, 2),
-                        "credit": round(credit, 2),
-                        "balance": round(balance_val, 2),
-                        "page": page_index + 1,
-                        "bank": bank_name,
-                        "source_file": source_filename,
-                    }
-                )
-
-                previous_balance = balance_val
-
-        return transactions
 
     # =========================================================
     # PARSER B: ISLAMIC SPLIT-DATE (kept for true “01 Jan 2025” layouts)
