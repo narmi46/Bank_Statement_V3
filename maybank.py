@@ -172,89 +172,99 @@ def parse_transactions_maybank(pdf_input, source_filename):
         return desc_by_y
 
     def parse_classic():
-        transactions = []
-        previous_balance = None
-
-        for page_index, page in enumerate(doc):
-            words = page.get_text("words")
-            rows, _ = _group_lines(words)
-
-            # ✅ multiline descriptions keyed by y of txn-start line
-            desc_by_y = _extract_desc_map_classic(page)
-
-            rows.sort(key=lambda r: (r["y0"], r["x0"]))
-            used_y = set()
-
-            for r in rows:
-                token = r["text"]
-                if not DATE_RE_A_TOKEN.match(token):
-                    continue
-
-                y = r["y0"]
-                if y in used_y:
-                    continue
-
-                # amounts on the same line
-                line = [w for w in rows if abs(w["y0"] - y) <= 1.8]
-                line.sort(key=lambda w: w["x0"])
-
-                date_iso = norm_date_a(token, statement_year)
-                if not date_iso:
-                    continue
-
-                amounts = []
-                for w in line:
-                    if AMOUNT_RE_A.match(w["text"]):
-                        amounts.append((w["x0"], w["text"]))
-
-                if not amounts:
-                    continue
-
-                amounts.sort(key=lambda a: a[0])
-                balance_val, _ = parse_amt_a(amounts[-1][1])
-
-                txn_val = txn_sign = None
-                if len(amounts) > 1:
-                    txn_val, txn_sign = parse_amt_a(amounts[-2][1])
-
-                # ✅ description from multiline extractor
-                description = desc_by_y.get(y, "").strip()
-
-                debit = credit = 0.0
-                if previous_balance is not None:
-                    delta = round(balance_val - previous_balance, 2)
-                    if delta > 0:
-                        credit = abs(delta)
-                    elif delta < 0:
-                        debit = abs(delta)
+            transactions = []
+            # In the Dec PDF, the starting balance is on the first line 
+            previous_balance = None
+    
+            for page_index, page in enumerate(doc):
+                words = page.get_text("words")
+                rows, _ = _group_lines(words)
+                desc_by_y = _extract_desc_map_classic(page)
+    
+                rows.sort(key=lambda r: (r["y0"], r["x0"]))
+                used_y = set()
+    
+                for r in rows:
+                    token = r["text"]
+                    # Match DD/MM or DD/MM/YYYY 
+                    if not DATE_RE_A_TOKEN.match(token):
+                        continue
+    
+                    y = r["y0"]
+                    if y in used_y:
+                        continue
+    
+                    # Increased tolerance to 3.0 to catch slightly misaligned amounts 
+                    line = [w for w in rows if abs(w["y0"] - y) <= 3.0]
+                    line.sort(key=lambda w: w["x0"])
+    
+                    date_iso = norm_date_a(token, statement_year)
+                    if not date_iso:
+                        continue
+    
+                    # Filter for tokens that look like money (ignoring the date)
+                    amounts = []
+                    for w in line:
+                        clean_text = w["text"].replace(",", "").rstrip("+-")
+                        try:
+                            float(clean_text)
+                            # Ensure it's not the date token itself
+                            if "/" not in w["text"]:
+                                amounts.append((w["x0"], w["text"]))
+                        except:
+                            continue
+    
+                    if not amounts:
+                        continue
+    
+                    amounts.sort(key=lambda a: a[0])
+                    
+                    # Logic for the December PDF: The right-most amount is ALWAYS the Balance [cite: 201, 249]
+                    balance_val = float(amounts[-1][1].replace(",", "").rstrip("+-"))
+    
+                    # Identify if the first line contains the Beginning Balance 
+                    line_text = " ".join([w["text"] for w in line]).upper()
+                    if "BEGINNING BALANCE" in line_text and len(amounts) >= 2:
+                        # In Dec PDF Page 1, the first line has both 31,495.97 and 1,630.00 
+                        previous_balance = float(amounts[0][1].replace(",", ""))
+                        # The second amount on this specific line is the actual transaction
+                        txn_val = float(amounts[1][1].replace(",", "").rstrip("+-"))
+                    elif len(amounts) > 1:
+                        txn_val = float(amounts[-2][1].replace(",", "").rstrip("+-"))
                     else:
-                        if txn_sign == "+" and txn_val is not None:
-                            credit = txn_val
-                        elif txn_sign == "-" and txn_val is not None:
-                            debit = txn_val
-                else:
-                    if txn_sign == "+" and txn_val is not None:
-                        credit = txn_val
-                    elif txn_sign == "-" and txn_val is not None:
-                        debit = txn_val
-
-                used_y.add(y)
-                transactions.append(
-                    {
-                        "date": date_iso,
-                        "description": description,
-                        "debit": round(debit, 2),
-                        "credit": round(credit, 2),
-                        "balance": round(balance_val, 2),
-                        "page": page_index + 1,
-                        "bank": bank_name,
-                        "source_file": source_filename,
-                    }
-                )
-
-                previous_balance = balance_val
-
-        return transactions
+                        txn_val = 0.0
+    
+                    description = desc_by_y.get(y, "").strip()
+                    debit = credit = 0.0
+    
+                    # Determine Debit/Credit by balance delta if no signs are present 
+                    if previous_balance is not None:
+                        delta = round(balance_val - previous_balance, 2)
+                        if delta > 0:
+                            credit = abs(delta)
+                        elif delta < 0:
+                            debit = abs(delta)
+                    else:
+                        # Fallback for the very first transaction if Beginning Balance was missing
+                        debit = txn_val 
+    
+                    used_y.add(y)
+                    transactions.append(
+                        {
+                            "date": date_iso,
+                            "description": description,
+                            "debit": round(debit, 2),
+                            "credit": round(credit, 2),
+                            "balance": round(balance_val, 2),
+                            "page": page_index + 1,
+                            "bank": bank_name,
+                            "source_file": source_filename,
+                        }
+                    )
+    
+                    previous_balance = balance_val
+    
+            return transactions
 
     # =========================================================
     # PARSER B: ISLAMIC SPLIT-DATE (kept for true “01 Jan 2025” layouts)
