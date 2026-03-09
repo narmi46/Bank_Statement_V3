@@ -68,7 +68,27 @@ st.markdown("---")
 st.subheader("🔎 Fraud Analysis")
 
 st.markdown("### 1️⃣ Top Parties & High-Value Credits")
-fraud_summary = parse_top_parties_and_high_value(transactions)
+
+control_col1, control_col2, control_col3 = st.columns(3)
+with control_col1:
+    top_n = st.number_input("Top parties to display", min_value=1, max_value=20, value=5, step=1)
+with control_col2:
+    threshold = st.number_input("High-value threshold (RM)", min_value=0.0, value=100000.0, step=1000.0)
+with control_col3:
+    threshold_mode = st.selectbox("Threshold mode", options=["gte", "lte"], index=0)
+
+fraud_summary = parse_top_parties_and_high_value(
+    transactions,
+    top_n=int(top_n),
+    threshold=float(threshold),
+    threshold_mode=threshold_mode,
+)
+
+st.caption(
+    f"Analyzed {fraud_summary['totals']['transactions']} transactions | "
+    f"Credit parties: {fraud_summary['totals']['credit_parties']} | "
+    f"Debit parties: {fraud_summary['totals']['debit_parties']}"
+)
 
 col1, col2 = st.columns(2)
 with col1:
@@ -102,7 +122,7 @@ if company_name.strip():
         "company_tokens": trace_result["company_tokens"],
     })
 
-    st.markdown("#### Matched Transactions")
+    st.markdown("#### Matched Transactions (sorted by relevance)")
     st.dataframe(pd.DataFrame(trace_result["transactions"]), use_container_width=True)
 else:
     st.info("Enter a company name to run inter-transaction tracing.")
