@@ -2,7 +2,6 @@ import streamlit as st
 import pdfplumber
 import json
 import pandas as pd
-from datetime import datetime
 from io import BytesIO
 
 # ---------------------------------------------------
@@ -26,6 +25,30 @@ from agro_bank import parse_agro_bank
 st.set_page_config(page_title="Bank Statement Parser", layout="wide")
 st.title("📄 Bank Statement Parser (Multi-File Support)")
 st.write("Upload one or more bank statement PDFs to extract transactions.")
+
+
+PARSER_MAP = {
+    "Affin Bank": parse_affin_bank,
+    "Agro Bank": parse_agro_bank,
+    "Ambank": parse_ambank,
+    "Bank Islam": parse_bank_islam,
+    "Bank Muamalat": parse_transactions_bank_muamalat,
+    "Bank Rakyat": parse_bank_rakyat,
+    "CIMB Bank": parse_transactions_cimb,
+    "Hong Leong": parse_hong_leong,
+    "Maybank": parse_transactions_maybank,
+    "Public Bank (PBB)": parse_transactions_pbb,
+    "RHB Bank": parse_transactions_rhb,
+}
+
+
+def process_uploaded_file(uploaded_file, bank_choice):
+    parser = PARSER_MAP[bank_choice]
+    if bank_choice == "RHB Bank":
+        return parser(uploaded_file, uploaded_file.name)
+
+    with pdfplumber.open(uploaded_file) as pdf:
+        return parser(pdf, uploaded_file.name)
 
 
 # ---------------------------------------------------
@@ -117,55 +140,13 @@ if uploaded_files and st.session_state.status == "running":
         bank_display_box.info(f"📄 Processing {bank_choice}: {uploaded_file.name}...")
 
         try:
-            with pdfplumber.open(uploaded_file) as pdf:
+            tx = process_uploaded_file(uploaded_file, bank_choice)
 
-                tx = []
-
-                if bank_choice == "Maybank":
-                    tx = parse_transactions_maybank(pdf, uploaded_file.name)
-
-                elif bank_choice == "Public Bank (PBB)":
-                    tx = parse_transactions_pbb(pdf, uploaded_file.name)
-                    
-                elif bank_choice == "RHB Bank":
-                    tx = parse_transactions_rhb(uploaded_file, uploaded_file.name)
-
-                #elif bank_choice == "RHB Bank":
-                #   tx = parse_transactions_rhb(pdf, uploaded_file.name)
-
-                elif bank_choice == "CIMB Bank":
-                    tx = parse_transactions_cimb(pdf, uploaded_file.name)
-                                
-                elif bank_choice == "Ambank":
-                    tx = parse_ambank(pdf, uploaded_file.name)
-
-                elif bank_choice == "Bank Islam":
-                    tx = parse_bank_islam(pdf, uploaded_file.name)
-
-                elif bank_choice == "Bank Rakyat":
-                    tx = parse_bank_rakyat(pdf, uploaded_file.name)
-
-                # ---------------------------------------------------
-                # NEW BANKS (ADDED ONLY)
-                # ---------------------------------------------------
-
-                elif bank_choice == "Bank Muamalat":
-                    tx = parse_transactions_bank_muamalat(pdf, uploaded_file.name)
-
-                elif bank_choice == "Agro Bank":
-                    tx = parse_agro_bank(pdf, uploaded_file.name)
-
-                elif bank_choice == "Hong Leong":
-                    tx = parse_hong_leong(pdf, uploaded_file.name)
-                
-                elif bank_choice == "Affin Bank":
-                    tx = parse_affin_bank(pdf, uploaded_file.name)
-
-                if tx:
-                    st.success(f"✅ Extracted {len(tx)} transactions from {uploaded_file.name}")
-                    all_tx.extend(tx)
-                else:
-                    st.warning(f"⚠️ No transactions found in {uploaded_file.name}")
+            if tx:
+                st.success(f"✅ Extracted {len(tx)} transactions from {uploaded_file.name}")
+                all_tx.extend(tx)
+            else:
+                st.warning(f"⚠️ No transactions found in {uploaded_file.name}")
 
         except Exception as e:
             st.error(f"❌ Error processing {uploaded_file.name}: {e}")
@@ -225,6 +206,24 @@ def calculate_monthly_summary(transactions):
     return sorted(monthly_summary, key=lambda x: x['month'])
 
 
+def get_report_summary(df):
+    date_series = pd.to_datetime(df.get('date'), errors='coerce')
+    valid_dates = date_series.dropna()
+    date_range = (
+        f"{valid_dates.min().date()} to {valid_dates.max().date()}"
+        if not valid_dates.empty
+        else "N/A"
+    )
+
+    file_count = df['source_file'].nunique() if 'source_file' in df.columns else 0
+
+    return {
+        "total_transactions": len(df),
+        "date_range": date_range,
+        "total_files_processed": int(file_count),
+    }
+
+
 # ---------------------------------------------------
 # DISPLAY RESULTS
 # ---------------------------------------------------
@@ -279,11 +278,7 @@ if st.session_state.results:
 
     with col2:
         full_report = {
-            "summary": {
-                "total_transactions": len(df),
-                "date_range": f"{df['date'].min()} to {df['date'].max()}",
-                "total_files_processed": df['source_file'].nunique()
-            },
+            "summary": get_report_summary(df),
             "monthly_summary": monthly_summary,
             "transactions": df_display.to_dict(orient="records")
         }
